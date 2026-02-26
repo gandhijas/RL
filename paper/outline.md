@@ -1,5 +1,5 @@
-# Working Title
-Reinforcement Learning for learning to approximate Quantum Disttributions rather than a classical methods 
+# Working Title (not final yet)
+Reinforcement Learning for learning to approximate Quantum Distributions rather than a classical methods 
 
 ## 1. Introduction
 - Quantum systems produce probability distributions via measurement
