@@ -111,14 +111,25 @@ def wrapped_theta_error(true_theta: float, theta_hat: float) -> float:
     """Shortest angular distance on a circle."""
     err = abs(true_theta - theta_hat)
     return float(min(err, 2 * np.pi - err))
-# 
-#  RL Part
+
+
+# ========================
+# RL policy utilities
+# ========================
 ACTIONS = ["Z", "X"]
 
 
-def build_state(z_counts: np.ndarray, x_counts: np.ndarray, shots_used: int, total_shots: int) -> np.ndarray:
+def build_state_vector(z_counts: np.ndarray, x_counts: np.ndarray, shots_used: int, total_shots: int) -> np.ndarray:
+    """
+    RL state representation.
 
+    state = [z_hat, x_hat, shots_fraction, 1]
 
+    z_hat = estimate of cos(theta)
+    x_hat = estimate of sin(theta)
+    shots_fraction = shots_used / total_shots
+    1 = bias feature
+    """
     z_hat = 0.0
     x_hat = 0.0
 
@@ -133,22 +144,25 @@ def build_state(z_counts: np.ndarray, x_counts: np.ndarray, shots_used: int, tot
     frac = shots_used / total_shots
     return np.array([z_hat, x_hat, frac, 1.0], dtype=float)
 
-def epsilon_greedy_action(state: np.ndarray,w_z: np.ndarray, w_x: np.ndarray, epsilon: float, rng: np.random.Generator) -> str:
+
+def epsilon_greedy_action(state: np.ndarray, w_z: np.ndarray, w_x: np.ndarray, epsilon: float, rng: np.random.Generator) -> str:
+    """Choose Z or X using epsilon-greedy over linear action scores."""
     if rng.random() < epsilon:
         return rng.choice(ACTIONS)
-    
-    q_Z = float(np.dot(w_z, state))
-    q_X = float(np.dot(w_x, state))
 
-    if q_Z > q_X:
+    q_z = float(np.dot(w_z, state))
+    q_x = float(np.dot(w_x, state))
+
+    if q_z > q_x:
         return "Z"
-    if q_X > q_Z:
+    if q_x > q_z:
         return "X"
     return rng.choice(ACTIONS)
 
 
-#Baseline run
-
+# ========================
+# Baseline rollouts
+# ========================
 def run_fixed_strategy_episode(
     psi_true: np.ndarray,
     true_theta: float,
@@ -201,6 +215,10 @@ def run_fixed_strategy_episode(
         "x_counts_1": int(x_counts[1]),
     }
 
+
+# ========================
+# RL rollout + training
+# ========================
 def run_rl_episode(
     psi_true: np.ndarray,
     true_theta: float,
@@ -211,70 +229,48 @@ def run_rl_episode(
     rng: np.random.Generator,
     update_weights: bool,
     learning_rate: float,
-):
-    total_shots = int(total_shots)
+) -> tuple[dict, np.ndarray, np.ndarray]:
+    """
+    Run one RL episode.
 
+    The agent:
+      - observes current state [z_hat, x_hat, shots_fraction, 1]
+      - chooses action Z or X
+      - receives a measurement outcome
+      - updates counts
+      - after all shots, gets reward = fidelity
+
+    If update_weights=True, do a simple episode-end policy update:
+      w_action += lr * reward * state
+    for every (state, action) encountered in the episode.
+    """
     z_counts = np.array([0, 0], dtype=int)
     x_counts = np.array([0, 0], dtype=int)
     memory = []
 
-    if total_shots <= 0:
-        raise ValueError(f"total_shots must be positive, got {total_shots}")
-
-    shots_used = 0
-
-    # --------------------------------
-    # Warm start: force 1 Z shot
-    # --------------------------------
-    if shots_used < total_shots:
-        probs = measure_probs_z(psi_true)
-        outcome = sample_one_shot(probs, rng)
-        z_counts[outcome] += 1
-        shots_used += 1
-
-    # --------------------------------
-    # Warm start: force 1 X shot
-    # --------------------------------
-    if shots_used < total_shots:
-        probs = measure_probs_x(psi_true)
-        outcome = sample_one_shot(probs, rng)
-        x_counts[outcome] += 1
-        shots_used += 1
-
-    # --------------------------------
-    # RL chooses the remaining shots
-    # --------------------------------
-    for shot_idx in range(shots_used, total_shots):
-        state = build_state(
-            z_counts=z_counts,
-            x_counts=x_counts,
-            shots_used=shot_idx,
-            total_shots=total_shots
-        )
-
+    for shot_idx in range(total_shots):
+        state = build_state_vector(z_counts, x_counts, shots_used=shot_idx, total_shots=total_shots)
         action = epsilon_greedy_action(state, w_z, w_x, epsilon, rng)
 
         if action == "Z":
             probs = measure_probs_z(psi_true)
             outcome = sample_one_shot(probs, rng)
             z_counts[outcome] += 1
-
         elif action == "X":
             probs = measure_probs_x(psi_true)
             outcome = sample_one_shot(probs, rng)
             x_counts[outcome] += 1
-
         else:
-            raise ValueError(f"Unexpected action returned by policy: {action!r}")
+            raise ValueError(f"Unknown RL action: {action}")
 
         memory.append((state.copy(), action))
 
     theta_hat = estimate_theta_from_counts(
-        z_counts=z_counts,
-        x_counts=x_counts,
+        z_counts=z_counts if np.sum(z_counts) > 0 else None,
+        x_counts=x_counts if np.sum(x_counts) > 0 else None,
     )
-
     psi_hat = state_from_theta(theta_hat)
+
     F = fidelity(psi_true, psi_hat)
     reward = F
 
@@ -282,7 +278,7 @@ def run_rl_episode(
         for state, action in memory:
             if action == "Z":
                 w_z = w_z + learning_rate * reward * state
-            elif action == "X":
+            else:
                 w_x = w_x + learning_rate * reward * state
 
     result = {
@@ -296,7 +292,6 @@ def run_rl_episode(
         "x_counts_0": int(x_counts[0]),
         "x_counts_1": int(x_counts[1]),
     }
-
     return result, w_z, w_x
 
 
@@ -347,7 +342,7 @@ for N in shot_budgets:
         )
 
     trained_weights[N] = (wz.copy(), wx.copy())
-    print("Training RL policy for shot budget:", N)
+
 
 # ========================
 # Evaluation
