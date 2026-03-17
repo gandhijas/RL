@@ -1,0 +1,5 @@
+Experiment: 1-qubit fixed measurement baselines
+Strategies compared: Z_only, ZX_split
+Shot budgets: [10, 25, 50, 100, 250, 500, 1000]
+Number of targets: 50
+Number of seeds: 5
