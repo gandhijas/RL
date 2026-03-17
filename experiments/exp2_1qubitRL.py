@@ -133,7 +133,7 @@ def build_state(z_counts: np.ndarray, x_counts: np.ndarray, shots_used: int, tot
     frac = shots_used / total_shots
     return np.array([z_hat, x_hat, frac, 1.0], dtype=float)
 
-def epsilon_greedy_action(state: np.ndarray,w_z: np.ndarray, w_x: np.ndarray, w_x: np.ndarray, epsilon: float, rng: np.random.Generator) -> str:
+def epsilon_greedy_action(state: np.ndarray,w_z: np.ndarray, w_x: np.ndarray, epsilon: float, rng: np.random.Generator) -> str:
     if rng.random() < epsilon:
         return rng.choice(ACTIONS)
     
@@ -210,7 +210,7 @@ def run_rl_episode(psi_true: np.ndarray,
                    rng: np.random.Generator,
                    update_weights: bool,
                    learning_rate: float,
-) _> tuple[dict, np.ndarray, np.ndarray]:
+) -> tuple[dict, np.ndarray, np.ndarray]:
 
     """
     Run one episode using an epsilon-greedy RL strategy.
@@ -234,7 +234,7 @@ def run_rl_episode(psi_true: np.ndarray,
         else:
             raise ValueError(f"Unknown action: {action}")
 
-    theta_hat = estimate_theta_from_counts(z_counts=z_counts if np.sum(z_counts) > 0 else None, x_counts=x_counts if np.sum(x_counts) > 0 else None)
+    theta_hat = estimate_theta_from_counts(z_counts=z_counts if np.sum(z_counts) > 0 else None, x_counts=x_counts if np.sum(x_counts) > 0 else None,)
     psi_hat = state_from_theta(theta_hat)
 
     F = fidelity(psi_true, psi_hat)
@@ -248,7 +248,7 @@ def run_rl_episode(psi_true: np.ndarray,
                 w_x += learning_rate * reward * state
 
 
-    return {
+    result= {
         "theta_hat": theta_hat,
         "theta_error": wrapped_theta_error(true_theta, theta_hat),
         "fidelity": F,
@@ -308,7 +308,7 @@ for N in shot_budgets:
         )
 
     trained_weights[N] = (wz.copy(), wx.copy())
-
+    print("Training RL policy for shot budget:", N)
 
 # ========================
 # Evaluation
