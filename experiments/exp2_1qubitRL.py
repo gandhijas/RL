@@ -130,8 +130,14 @@ def build_state(z_counts: np.ndarray, x_counts: np.ndarray, shots_used: int, tot
         x_probs = x_counts / np.sum(x_counts)
         x_hat = float(x_probs[0] - x_probs[1])
 
-    frac = shots_used / total_shots
-    return np.array([z_hat, x_hat, frac, 1.0], dtype=float)
+
+    z_total = np.sum(z_counts)
+    x_total = np.sum(x_counts)
+    z_frac = z_total / total_shots if total_shots > 0 else 0.0
+    x_frac = x_total / total_shots if total_shots > 0 else 0.0
+    frac = shots_used / total_shots if total_shots > 0 else 0.0
+
+    return np.array([z_hat, x_hat, z_frac, x_frac, frac, 1.0], dtype=float)
 
 def epsilon_greedy_action(state: np.ndarray,w_z: np.ndarray, w_x: np.ndarray, epsilon: float, rng: np.random.Generator) -> str:
     if rng.random() < epsilon:
@@ -216,34 +222,35 @@ def run_rl_episode(
 
     z_counts = np.array([0, 0], dtype=int)
     x_counts = np.array([0, 0], dtype=int)
-    memory = []
 
     if total_shots <= 0:
         raise ValueError(f"total_shots must be positive, got {total_shots}")
 
     shots_used = 0
 
-    # --------------------------------
     # Warm start: force 1 Z shot
-    # --------------------------------
     if shots_used < total_shots:
         probs = measure_probs_z(psi_true)
         outcome = sample_one_shot(probs, rng)
         z_counts[outcome] += 1
         shots_used += 1
 
-    # --------------------------------
     # Warm start: force 1 X shot
-    # --------------------------------
     if shots_used < total_shots:
         probs = measure_probs_x(psi_true)
         outcome = sample_one_shot(probs, rng)
         x_counts[outcome] += 1
         shots_used += 1
 
-    # --------------------------------
-    # RL chooses the remaining shots
-    # --------------------------------
+    # Initial estimate after warm start
+    theta_hat_prev = estimate_theta_from_counts(
+        z_counts=z_counts,
+        x_counts=x_counts,
+    )
+    psi_hat_prev = state_from_theta(theta_hat_prev)
+    F_prev = fidelity(psi_true, psi_hat_prev)
+
+    # RL chooses remaining shots
     for shot_idx in range(shots_used, total_shots):
         state = build_state(
             z_counts=z_counts,
@@ -267,30 +274,36 @@ def run_rl_episode(
         else:
             raise ValueError(f"Unexpected action returned by policy: {action!r}")
 
-        memory.append((state.copy(), action))
+        theta_hat_new = estimate_theta_from_counts(
+            z_counts=z_counts,
+            x_counts=x_counts,
+        )
+        psi_hat_new = state_from_theta(theta_hat_new)
+        F_new = fidelity(psi_true, psi_hat_new)
+
+        reward_step = F_new - F_prev
+
+        if update_weights:
+            if action == "Z":
+                w_z = w_z + learning_rate * reward_step * state
+            elif action == "X":
+                w_x = w_x + learning_rate * reward_step * state
+
+        F_prev = F_new
 
     theta_hat = estimate_theta_from_counts(
         z_counts=z_counts,
         x_counts=x_counts,
     )
-
     psi_hat = state_from_theta(theta_hat)
     F = fidelity(psi_true, psi_hat)
-    reward = F
-
-    if update_weights:
-        for state, action in memory:
-            if action == "Z":
-                w_z = w_z + learning_rate * reward * state
-            elif action == "X":
-                w_x = w_x + learning_rate * reward * state
 
     result = {
         "theta_hat": theta_hat,
         "theta_error": wrapped_theta_error(true_theta, theta_hat),
         "fidelity": F,
         "infidelity": 1 - F,
-        "reward": reward,
+        "reward": F,
         "z_counts_0": int(z_counts[0]),
         "z_counts_1": int(z_counts[1]),
         "x_counts_0": int(x_counts[0]),
@@ -304,7 +317,7 @@ def run_rl_episode(
 # Experiment configuration
 # ========================
 shot_budgets = [10, 25, 50, 100, 250, 500]
-num_train_episodes = 400
+num_train_episodes = 800
 num_test_targets = 50
 num_test_seeds = 5
 
@@ -316,8 +329,8 @@ master_rng = np.random.default_rng(123)
 
 # Weight vectors for the RL policy: one per action
 # State features = [z_hat, x_hat, shots_fraction, 1]
-w_z = np.zeros(4, dtype=float)
-w_x = np.zeros(4, dtype=float)
+w_z = np.zeros(6, dtype=float)
+w_x = np.zeros(6, dtype=float)
 
 
 # ========================
@@ -326,8 +339,8 @@ w_x = np.zeros(4, dtype=float)
 trained_weights = {}
 
 for N in shot_budgets:
-    wz = np.zeros(4, dtype=float)
-    wx = np.zeros(4, dtype=float)
+    wz = np.zeros(6, dtype=float)
+    wx = np.zeros(6, dtype=float)
 
     for ep in range(num_train_episodes):
         theta = master_rng.uniform(0, 2 * np.pi)
@@ -529,3 +542,6 @@ print("- fidelity_vs_shots.png")
 print("- infidelity_vs_shots.png")
 print("- theta_error_vs_shots.png")
 print("- notes.txt")
+
+print("wz shape:", wz.shape)
+print("wx shape:", wx.shape)

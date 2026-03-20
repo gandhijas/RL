@@ -1,0 +1,9 @@
+Experiment: Exp02 - 1-qubit adaptive measurement with RL
+Methods: Z_only, ZX_split, RL_adaptive
+Shot budgets: [10, 25, 50, 100, 250, 500]
+Training episodes per shot budget: 400
+Test targets: 50
+Test seeds: 5
+Epsilon train: 0.15
+Epsilon test: 0.0
+Learning rate: 0.02
