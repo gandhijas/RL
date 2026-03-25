@@ -1,5 +1,5 @@
-# Working Title (not final yet)
-Reinforcement Learning for learning to approximate Quantum Distributions rather than a classical methods 
+# Working Title
+Reinforcement Learning for learning to approximate Quantum Disttributions rather than a classical methods 
 
 ## 1. Introduction
 - Quantum systems produce probability distributions via measurement
@@ -86,4 +86,4 @@ Reinforcement Learning for learning to approximate Quantum Distributions rather 
 - Incorporate hardware noise models
 - Compare with Bayesian adaptive tomography
 - Investigate theoretical bounds on adaptive sampling
-- Explore actor-critic vs policy-gradient variants
+- Explore actor-critic vs policy-gradient variantsgit vco

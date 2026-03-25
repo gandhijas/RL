@@ -1,215 +1,269 @@
 import os
 from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-
-# ------------------------
+# ========================
 # Run directory
-# ------------------------
+# ========================
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-run_dir = f"results/{timestamp}_exp02"
+run_dir = f"results/{timestamp}_exp04_2qubit_fixed"
 os.makedirs(run_dir, exist_ok=True)
 
-
-# ------------------------
-# Quantum gates (NumPy)
-# ------------------------
-def ry(theta: float) -> np.ndarray:
-    """Single-qubit RY rotation (2x2)."""
-    return np.array([
-        [np.cos(theta/2), -np.sin(theta/2)],
-        [np.sin(theta/2),  np.cos(theta/2)]
-    ], dtype=float)
-
-
-def kron(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Kronecker product."""
-    return np.kron(a, b)
-
-
-def cnot_01() -> np.ndarray:
+# ========================
+# Quantum utilities
+# ========================
+def state_from_angles(theta: float, phi: float) -> np.ndarray:
     """
-    CNOT with qubit 0 as control and qubit 1 as target, in basis:
-    |00>, |01>, |10>, |11>
+    Single-qubit pure state:
+        |psi(theta, phi)> = cos(theta/2)|0> + e^{i phi} sin(theta/2)|1>
     """
-    return np.array([
-        [1, 0, 0, 0],  # |00> -> |00>
-        [0, 1, 0, 0],  # |01> -> |01>
-        [0, 0, 0, 1],  # |10> -> |11>
-        [0, 0, 1, 0],  # |11> -> |10>
-    ], dtype=float)
+    return np.array([np.cos(theta / 2), np.exp(1j * phi) * np.sin(theta / 2)], dtype=complex)
 
 
-def state_from_thetas(theta1: float, theta2: float) -> np.ndarray:
-    """
-    Build 2-qubit state:
-      |00> --RY(theta1) on q0--●
-      |00> --RY(theta2) on q1--X
-    Return statevector of length 4 in computational basis.
-    """
-    # |00>
-    psi0 = np.array([1, 0, 0, 0], dtype=float)
-
-    # Apply RY on each qubit: (RY(theta1) ⊗ RY(theta2))
-    U_rot = kron(ry(theta1), ry(theta2))
-    psi1 = U_rot @ psi0
-
-    # Apply CNOT
-    U_cnot = cnot_01()
-    psi2 = U_cnot @ psi1
-
-    return psi2
+def fidelity(psi: np.ndarray, phi: np.ndarray) -> float:
+    """State fidelity |<psi|phi>|^2."""
+    return float(np.abs(np.vdot(psi, phi)) ** 2)
 
 
-def probs_from_state(psi: np.ndarray) -> np.ndarray:
-    """Measurement probabilities in computational basis."""
-    p = np.abs(psi)**2
+def hadamard() -> np.ndarray:
+    return (1 / np.sqrt(2)) * np.array([[1, 1], [1, -1]], dtype=complex)
+
+
+def s_dagger() -> np.ndarray:
+    return np.array([[1, 0], [0, -1j]], dtype=complex)
+
+# ========================
+# Measurement probabilities
+# ========================
+def measure_probs_z(psi: np.ndarray) -> np.ndarray:
+    p = np.abs(psi) ** 2
     return p / np.sum(p)
 
 
-# ------------------------
-# Sampling + estimators
-# ------------------------
-OUTCOMES = ["00", "01", "10", "11"]
-K = 4
-
-def sample_shots(p_true: np.ndarray, N: int, rng: np.random.Generator) -> np.ndarray:
-    """
-    Return counts for outcomes [00,01,10,11] from N samples.
-    """
-    samples = rng.choice(np.arange(K), size=N, p=p_true)
-    counts = np.bincount(samples, minlength=K)
-    return counts
+def measure_probs_x(psi: np.ndarray) -> np.ndarray:
+    psi_x = hadamard() @ psi
+    p = np.abs(psi_x) ** 2
+    return p / np.sum(p)
 
 
-def mle_estimate(counts: np.ndarray) -> np.ndarray:
-    """Empirical frequencies."""
-    N = np.sum(counts)
-    return counts / N
+def measure_probs_y(psi: np.ndarray) -> np.ndarray:
+    psi_y = hadamard() @ (s_dagger() @ psi)
+    p = np.abs(psi_y) ** 2
+    return p / np.sum(p)
 
 
-def dirichlet_estimate(counts: np.ndarray, alpha: float) -> np.ndarray:
-    """
-    Symmetric Dirichlet smoothing:
-      (count + alpha) / (N + K*alpha)
-    """
-    N = np.sum(counts)
-    return (counts + alpha) / (N + K * alpha)
+def sample_one_shot(probs: np.ndarray, rng: np.random.Generator) -> int:
+    return int(rng.choice([0, 1], p=probs))
 
 
-# ------------------------
-# Metrics
-# ------------------------
-def l1_error(p_true: np.ndarray, p_hat: np.ndarray) -> float:
-    return float(np.sum(np.abs(p_true - p_hat)))
+# ========================
+# Bloch estimation
+# ========================
+def estimate_bloch_from_counts(z_counts, x_counts, y_counts):
+    z_hat = x_hat = y_hat = 0.0
+    if np.sum(z_counts) > 0:
+        z_probs = z_counts / np.sum(z_counts)
+        z_hat = float(z_probs[0] - z_probs[1])
+    if np.sum(x_counts) > 0:
+        x_probs = x_counts / np.sum(x_counts)
+        x_hat = float(x_probs[0] - x_probs[1])
+    if np.sum(y_counts) > 0:
+        y_probs = y_counts / np.sum(y_counts)
+        y_hat = float(y_probs[0] - y_probs[1])
+    return x_hat, y_hat, z_hat
 
 
-def kl_divergence(p_true: np.ndarray, p_hat: np.ndarray, eps: float = 1e-12) -> float:
-    """
-    KL(P_true || P_hat). Add eps to avoid log(0).
-    Note: KL is most meaningful when p_hat has no zeros (Dirichlet helps).
-    """
-    p_t = np.clip(p_true, eps, 1.0)
-    p_h = np.clip(p_hat, eps, 1.0)
-    return float(np.sum(p_t * np.log(p_t / p_h)))
+def bloch_to_state(x, y, z):
+    r = np.array([x, y, z], dtype=float)
+    norm = np.linalg.norm(r)
+    if norm < 1e-12:
+        return np.array([1.0, 0.0], dtype=complex)
+    x_n, y_n, z_n = r / norm
+    z_n = float(np.clip(z_n, -1.0, 1.0))
+    theta_hat = float(np.arccos(z_n))
+    phi_hat = float(np.mod(np.arctan2(y_n, x_n), 2 * np.pi))
+    return state_from_angles(theta_hat, phi_hat)
 
 
-# ------------------------
-# Experiment config
-# ------------------------
-shot_budgets = [10, 25, 50, 100, 250, 500, 1000]
-num_targets = 20          # how many random (theta1, theta2) target circuits
-num_seeds = 5             # repeats per target for sampling noise
-alpha = 0.5               # Dirichlet smoothing strength
-
-rng_master = np.random.default_rng(123)  # master RNG for reproducibility
+def estimate_state_from_counts(z_counts, x_counts, y_counts):
+    x_hat, y_hat, z_hat = estimate_bloch_from_counts(z_counts, x_counts, y_counts)
+    return bloch_to_state(x_hat, y_hat, z_hat)
 
 
-# ------------------------
+# ========================
+# Fixed strategy episode (2 qubits)
+# ========================
+ACTIONS = ["Z", "X", "Y"]
+
+
+def run_fixed_strategy_episode(psi1, psi2, total_shots, strategy, rng):
+    z1_counts = x1_counts = y1_counts = np.array([0, 0], dtype=int)
+    z2_counts = x2_counts = y2_counts = np.array([0, 0], dtype=int)
+
+    if strategy == "Z_only":
+        for _ in range(total_shots):
+            z1_counts[sample_one_shot(measure_probs_z(psi1), rng)] += 1
+            z2_counts[sample_one_shot(measure_probs_z(psi2), rng)] += 1
+
+    elif strategy == "ZX_split":
+        n_z = total_shots // 2
+        n_x = total_shots - n_z
+        for _ in range(n_z):
+            z1_counts[sample_one_shot(measure_probs_z(psi1), rng)] += 1
+            z2_counts[sample_one_shot(measure_probs_z(psi2), rng)] += 1
+        for _ in range(n_x):
+            x1_counts[sample_one_shot(measure_probs_x(psi1), rng)] += 1
+            x2_counts[sample_one_shot(measure_probs_x(psi2), rng)] += 1
+
+    elif strategy == "XYZ_split":
+        n_z = total_shots // 3
+        n_x = total_shots // 3
+        n_y = total_shots - n_z - n_x
+        for _ in range(n_z):
+            z1_counts[sample_one_shot(measure_probs_z(psi1), rng)] += 1
+            z2_counts[sample_one_shot(measure_probs_z(psi2), rng)] += 1
+        for _ in range(n_x):
+            x1_counts[sample_one_shot(measure_probs_x(psi1), rng)] += 1
+            x2_counts[sample_one_shot(measure_probs_x(psi2), rng)] += 1
+        for _ in range(n_y):
+            y1_counts[sample_one_shot(measure_probs_y(psi1), rng)] += 1
+            y2_counts[sample_one_shot(measure_probs_y(psi2), rng)] += 1
+
+    else:
+        raise ValueError(f"Unknown strategy: {strategy}")
+
+    psi1_hat = estimate_state_from_counts(z1_counts, x1_counts, y1_counts)
+    psi2_hat = estimate_state_from_counts(z2_counts, x2_counts, y2_counts)
+    F_total = fidelity(psi1_hat, psi1) * fidelity(psi2_hat, psi2)
+
+    return {
+        "fidelity": F_total,
+        "infidelity": 1 - F_total,
+        "z1_counts_0": int(z1_counts[0]),
+        "z1_counts_1": int(z1_counts[1]),
+        "x1_counts_0": int(x1_counts[0]),
+        "x1_counts_1": int(x1_counts[1]),
+        "y1_counts_0": int(y1_counts[0]),
+        "y1_counts_1": int(y1_counts[1]),
+        "z2_counts_0": int(z2_counts[0]),
+        "z2_counts_1": int(z2_counts[1]),
+        "x2_counts_0": int(x2_counts[0]),
+        "x2_counts_1": int(x2_counts[1]),
+        "y2_counts_0": int(y2_counts[0]),
+        "y2_counts_1": int(y2_counts[1]),
+    }
+
+# ========================
+# Experiment configuration
+# ========================
+shot_budgets = [10, 25, 50, 100, 250, 500]
+num_test_targets = 50
+num_test_seeds = 5
+master_rng = np.random.default_rng(123)
+
+# ========================
 # Run experiment
-# ------------------------
+# ========================
 rows = []
 
-for t in range(num_targets):
-    # Random target circuit parameters
-    theta1 = rng_master.uniform(0, 2*np.pi)
-    theta2 = rng_master.uniform(0, 2*np.pi)
+for target_id in range(num_test_targets):
+    theta1 = master_rng.uniform(0, np.pi)
+    phi1 = master_rng.uniform(0, 2 * np.pi)
+    theta2 = master_rng.uniform(0, np.pi)
+    phi2 = master_rng.uniform(0, 2 * np.pi)
 
-    psi_true = state_from_thetas(theta1, theta2)
-    p_true = probs_from_state(psi_true)
+    psi1 = state_from_angles(theta1, phi1)
+    psi2 = state_from_angles(theta2, phi2)
 
-    for seed in range(num_seeds):
-        rng = np.random.default_rng(seed + 1000 * t)
-
+    for seed in range(num_test_seeds):
         for N in shot_budgets:
-            counts = sample_shots(p_true, N, rng)
+            rng = np.random.default_rng(target_id * 1000 + seed * 100 + N)
 
-            p_mle = mle_estimate(counts)
-            p_dir = dirichlet_estimate(counts, alpha=alpha)
+            for strategy in ["Z_only", "ZX_split", "XYZ_split"]:
+                out = run_fixed_strategy_episode(psi1, psi2, N, strategy, rng)
+                rows.append({
+                    "target_id": target_id,
+                    "seed": seed,
+                    "N": N,
+                    "method": strategy,
+                    "true_theta1": theta1,
+                    "true_phi1": phi1,
+                    "true_theta2": theta2,
+                    "true_phi2": phi2,
+                    **out,
+                })
 
-            rows.append({
-                "target_id": t,
-                "seed": seed,
-                "theta1": theta1,
-                "theta2": theta2,
-                "N": N,
-                "method": "MLE",
-                "l1": l1_error(p_true, p_mle),
-                "kl": kl_divergence(p_true, p_mle),
-            })
-
-            rows.append({
-                "target_id": t,
-                "seed": seed,
-                "theta1": theta1,
-                "theta2": theta2,
-                "N": N,
-                "method": f"Dirichlet(alpha={alpha})",
-                "l1": l1_error(p_true, p_dir),
-                "kl": kl_divergence(p_true, p_dir),
-            })
-
-
+# ========================
+# Save raw metrics
+# ========================
 df = pd.DataFrame(rows)
 df.to_csv(f"{run_dir}/metrics.csv", index=False)
 
-
-# ------------------------
-# Aggregate + plot
-# ------------------------
+# ========================
+# Aggregate summary
+# ========================
 agg = (
     df.groupby(["method", "N"])
-      .agg(l1_mean=("l1", "mean"),
-           l1_std=("l1", "std"),
-           kl_mean=("kl", "mean"),
-           kl_std=("kl", "std"))
+      .agg(
+          fidelity_mean=("fidelity", "mean"),
+          fidelity_std=("fidelity", "std"),
+          infidelity_mean=("infidelity", "mean"),
+          infidelity_std=("infidelity", "std"),
+      )
       .reset_index()
 )
 
 agg.to_csv(f"{run_dir}/summary.csv", index=False)
 
-# Plot L1 error vs shots
-plt.figure()
-for method in agg["method"].unique():
-    sub = agg[agg["method"] == method].sort_values("N")
-    x = sub["N"].to_numpy()
-    y = sub["l1_mean"].to_numpy()
-    ystd = sub["l1_std"].to_numpy()
+# ========================
+# Plot helper
+# ========================
+def plot_metric(metric_mean, metric_std, ylabel, title, filename, logy=False):
+    plt.figure()
+    for method in agg["method"].unique():
+        sub = agg[agg["method"] == method].sort_values("N")
+        x = sub["N"].to_numpy()
+        y = sub[metric_mean].to_numpy()
+        ystd = sub[metric_std].to_numpy()
+        plt.plot(x, y, marker="o", label=method)
+        plt.fill_between(x, y - ystd, y + ystd, alpha=0.2)
+    plt.xscale("log")
+    if logy:
+        plt.yscale("log")
+    plt.xlabel("Shots (N)")
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f"{run_dir}/{filename}", dpi=200)
+    plt.close()
 
-    plt.plot(x, y, marker="o", label=method)
-    plt.fill_between(x, y - ystd, y + ystd, alpha=0.2)
+# ========================
+# Make plots
+# ========================
+plot_metric("fidelity_mean", "fidelity_std", "Mean Fidelity",
+            "Exp04: 2-Qubit Fixed Strategy (Fidelity vs Shots)", "fidelity_vs_shots.png")
+plot_metric("infidelity_mean", "infidelity_std", "Mean Infidelity",
+            "Exp04: 2-Qubit Fixed Strategy (Infidelity vs Shots)", "infidelity_vs_shots.png", logy=True)
 
-plt.xscale("log")
-plt.yscale("log")
-plt.xlabel("Shots (N)")
-plt.ylabel("L1 error")
-plt.title("2-Qubit Distribution Estimation: Error vs Shots")
-plt.legend()
-plt.tight_layout()
-plt.savefig(f"{run_dir}/l1_vs_shots.png", dpi=200)
-plt.show()
+# ========================
+# Notes file
+# ========================
+with open(f"{run_dir}/notes.txt", "w") as f:
+    f.write("Experiment: Exp04 - 2-qubit fixed strategies\n")
+    f.write("State family: two independent pure qubits\n")
+    f.write("Methods: Z_only, ZX_split, XYZ_split\n")
+    f.write(f"Shot budgets: {shot_budgets}\n")
+    f.write(f"Test targets: {num_test_targets}\n")
+    f.write(f"Test seeds: {num_test_seeds}\n")
 
-print("Saved:", run_dir)
-print("Files: metrics.csv, summary.csv, l1_vs_shots.png")
+print("Saved results to:", run_dir)
+print("Files created:")
+print("- metrics.csv")
+print("- summary.csv")
+print("- fidelity_vs_shots.png")
+print("- infidelity_vs_shots.png")
+print("- notes.txt")
