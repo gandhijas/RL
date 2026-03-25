@@ -100,8 +100,12 @@ ACTIONS = ["Z", "X", "Y"]
 
 
 def run_fixed_strategy_episode(psi1, psi2, total_shots, strategy, rng):
-    z1_counts = x1_counts = y1_counts = np.array([0, 0], dtype=int)
-    z2_counts = x2_counts = y2_counts = np.array([0, 0], dtype=int)
+    z1_counts = np.array([0, 0], dtype=int)
+    x1_counts = np.array([0, 0], dtype=int)
+    y1_counts = np.array([0, 0], dtype=int)
+    z2_counts = np.array([0, 0], dtype=int)
+    x2_counts = np.array([0, 0], dtype=int)
+    y2_counts = np.array([0, 0], dtype=int)
 
     if strategy == "Z_only":
         for _ in range(total_shots):
