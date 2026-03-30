@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 # Run directory
 # ========================
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-run_dir = f"results/{timestamp}_exp05_2qubitRL_stress"
+run_dir = f"results/{timestamp}_exp06_budgetstress"   # <- changed exp05 -> exp06
 os.makedirs(run_dir, exist_ok=True)
 
 # ========================
