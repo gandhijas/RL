@@ -175,8 +175,15 @@ def build_state(
     total_shots: int,
 ) -> np.ndarray:
     """
-    RL feature vector:
-      [x_hat, y_hat, z_hat, x_frac, y_frac, z_frac, progress, bias]
+    Uncertainty-aware RL feature vector.
+
+    Features:
+      [x_hat, y_hat, z_hat,
+       x_frac, y_frac, z_frac,
+       x_unc, y_unc, z_unc,
+       x_deficit, y_deficit, z_deficit,
+       progress,
+       bias]
     """
     x_hat, y_hat, z_hat = estimate_bloch_from_counts(z_counts, x_counts, y_counts)
 
@@ -187,10 +194,29 @@ def build_state(
     x_frac = x_total / total_shots
     y_frac = y_total / total_shots
     z_frac = z_total / total_shots
+
     progress = shots_used / total_shots
 
+    # High when few measurements have been taken in that basis
+    x_unc = 1.0 / np.sqrt(x_total + 1)
+    y_unc = 1.0 / np.sqrt(y_total + 1)
+    z_unc = 1.0 / np.sqrt(z_total + 1)
+
+    # Positive means this basis is under-sampled relative to even XYZ allocation
+    target_frac = progress / 3.0
+    x_deficit = target_frac - x_frac
+    y_deficit = target_frac - y_frac
+    z_deficit = target_frac - z_frac
+
     return np.array(
-        [x_hat, y_hat, z_hat, x_frac, y_frac, z_frac, progress, 1.0],
+        [
+            x_hat, y_hat, z_hat,
+            x_frac, y_frac, z_frac,
+            x_unc, y_unc, z_unc,
+            x_deficit, y_deficit, z_deficit,
+            progress,
+            1.0
+        ],
         dtype=float
     )
 
@@ -436,10 +462,12 @@ master_rng = np.random.default_rng(123)
 trained_weights = {}
 
 for N in shot_budgets:
-    wz = np.zeros(8, dtype=float)
-    wx = np.zeros(8, dtype=float)
-    wy = np.zeros(8, dtype=float)
+    STATE_DIM = 14
 
+    wz = np.zeros(STATE_DIM, dtype=float)
+    wx = np.zeros(STATE_DIM, dtype=float)
+    wy = np.zeros(STATE_DIM, dtype=float)
+    
     for ep in range(num_train_episodes):
         theta = master_rng.uniform(0, np.pi)
         phi = master_rng.uniform(0, 2 * np.pi)
