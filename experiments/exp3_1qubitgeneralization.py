@@ -411,7 +411,30 @@ def run_rl_episode(
         psi_hat_new = estimate_state_from_counts(z_counts, x_counts, y_counts)
         F_new = fidelity(psi_true, psi_hat_new)
 
-        reward_step = F_new - F_prev
+        # Fidelity improvement reward
+        fidelity_gain = F_new - F_prev
+
+        # Current measurement totals
+        z_total = int(np.sum(z_counts))
+        x_total = int(np.sum(x_counts))
+        y_total = int(np.sum(y_counts))
+        used_total = z_total + x_total + y_total
+
+        # Current allocation fractions
+        x_frac = x_total / used_total
+        y_frac = y_total / used_total
+        z_frac = z_total / used_total
+
+        # Penalize strong imbalance away from XYZ split
+        imbalance = (
+            (x_frac - 1/3) ** 2 +
+            (y_frac - 1/3) ** 2 +
+            (z_frac - 1/3) ** 2
+        )
+
+        imbalance_weight = 0.01
+
+        reward_step = fidelity_gain - imbalance_weight * imbalance
 
         if update_weights:
             if action == "Z":
