@@ -1,0 +1,15 @@
+Experiment: Exp03 - upgraded generalized one-qubit adaptive measurement
+State family: pure one-qubit states sampled uniformly on the Bloch sphere
+Methods: Z_only, ZX_split, XYZ_split, RL_adaptive
+RL actions: Z, X, Y
+RL update: one-step TD/Q-learning with linear function approximation
+RL reward: fidelity improvement minus small allocation imbalance penalty
+Shot budgets: [10, 25, 50, 100, 250, 500]
+Training episodes per shot budget: 3000
+Test targets: 50
+Test seeds: 5
+Epsilon schedule: 0.3 -> 0.05
+Evaluation epsilon: 0.0
+Learning rate: 0.01
+Gamma: 0.95
+Imbalance penalty weight: 0.01
