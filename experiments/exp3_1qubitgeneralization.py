@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 # Run directory
 # ========================
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-run_dir = f"results/{timestamp}_exp03_1qubit_generalized"
+run_dir = f"results/{timestamp}_exp03_1qubit_generalized_upgraded"
 os.makedirs(run_dir, exist_ok=True)
 
 
@@ -18,15 +18,22 @@ os.makedirs(run_dir, exist_ok=True)
 # Quantum utilities
 # ========================
 def state_from_angles(theta: float, phi: float) -> np.ndarray:
-    """
-    General pure 1-qubit state:
-        |psi(theta, phi)> = cos(theta/2)|0> + e^{i phi} sin(theta/2)|1>
-    with theta in [0, pi], phi in [0, 2pi).
-    """
-    return np.array([
-        np.cos(theta / 2),
-        np.exp(1j * phi) * np.sin(theta / 2)
-    ], dtype=complex)
+    """General pure one-qubit state."""
+    return np.array(
+        [
+            np.cos(theta / 2),
+            np.exp(1j * phi) * np.sin(theta / 2),
+        ],
+        dtype=complex,
+    )
+
+
+def sample_uniform_pure_state(rng: np.random.Generator):
+    """Sample a pure qubit uniformly from the Bloch sphere."""
+    z = rng.uniform(-1.0, 1.0)
+    theta = float(np.arccos(z))
+    phi = float(rng.uniform(0.0, 2.0 * np.pi))
+    return theta, phi, state_from_angles(theta, phi)
 
 
 def fidelity(psi: np.ndarray, phi: np.ndarray) -> float:
@@ -36,54 +43,34 @@ def fidelity(psi: np.ndarray, phi: np.ndarray) -> float:
 
 
 def hadamard() -> np.ndarray:
-    """Hadamard gate."""
-    return (1 / np.sqrt(2)) * np.array([
-        [1, 1],
-        [1, -1]
-    ], dtype=complex)
+    return (1 / np.sqrt(2)) * np.array([[1, 1], [1, -1]], dtype=complex)
 
 
 def s_dagger() -> np.ndarray:
-    """S^\dagger gate."""
-    return np.array([
-        [1, 0],
-        [0, -1j]
-    ], dtype=complex)
+    return np.array([[1, 0], [0, -1j]], dtype=complex)
 
 
 # ========================
 # Measurement probabilities
 # ========================
 def measure_probs_z(psi: np.ndarray) -> np.ndarray:
-    """
-    Z-basis probabilities [P(0), P(1)].
-    """
     p = np.abs(psi) ** 2
     return p / np.sum(p)
 
 
 def measure_probs_x(psi: np.ndarray) -> np.ndarray:
-    """
-    X-basis probabilities [P(+), P(-)].
-    Implemented by applying H and then measuring in Z.
-    """
     psi_x = hadamard() @ psi
     p = np.abs(psi_x) ** 2
     return p / np.sum(p)
 
 
 def measure_probs_y(psi: np.ndarray) -> np.ndarray:
-    """
-    Y-basis probabilities [P(+_y), P(-_y)].
-    Implemented by applying H @ S^\dagger and then measuring in Z.
-    """
     psi_y = hadamard() @ (s_dagger() @ psi)
     p = np.abs(psi_y) ** 2
     return p / np.sum(p)
 
 
 def sample_one_shot(probs: np.ndarray, rng: np.random.Generator) -> int:
-    """Sample one outcome, returning 0 or 1."""
     return int(rng.choice([0, 1], p=probs))
 
 
@@ -95,47 +82,20 @@ def estimate_bloch_from_counts(
     x_counts: np.ndarray,
     y_counts: np.ndarray,
 ):
-    """
-    Estimate Bloch coordinates from measurement counts.
-
-    For each basis:
-      coord_hat = P(outcome 0) - P(outcome 1)
-
-    Interpretation:
-      Z: outcome 0 -> +Z, outcome 1 -> -Z
-      X: outcome 0 -> +X, outcome 1 -> -X
-      Y: outcome 0 -> +Y, outcome 1 -> -Y
-    """
-    z_hat = 0.0
-    x_hat = 0.0
-    y_hat = 0.0
-
+    """Estimate Bloch coordinates from Pauli-basis counts."""
     z_total = int(np.sum(z_counts))
     x_total = int(np.sum(x_counts))
     y_total = int(np.sum(y_counts))
 
-    if z_total > 0:
-        z_probs = z_counts / z_total
-        z_hat = float(z_probs[0] - z_probs[1])
-
-    if x_total > 0:
-        x_probs = x_counts / x_total
-        x_hat = float(x_probs[0] - x_probs[1])
-
-    if y_total > 0:
-        y_probs = y_counts / y_total
-        y_hat = float(y_probs[0] - y_probs[1])
+    z_hat = 0.0 if z_total == 0 else float((z_counts[0] - z_counts[1]) / z_total)
+    x_hat = 0.0 if x_total == 0 else float((x_counts[0] - x_counts[1]) / x_total)
+    y_hat = 0.0 if y_total == 0 else float((y_counts[0] - y_counts[1]) / y_total)
 
     return x_hat, y_hat, z_hat
 
 
 def bloch_to_state(x: float, y: float, z: float) -> np.ndarray:
-    """
-    Convert a Bloch vector direction into a pure qubit state.
-
-    We normalize the vector to unit length to produce a pure-state estimate.
-    If the norm is tiny, default to |0>.
-    """
+    """Project an estimated Bloch vector onto the pure-state Bloch sphere."""
     r = np.array([x, y, z], dtype=float)
     norm = np.linalg.norm(r)
 
@@ -147,7 +107,6 @@ def bloch_to_state(x: float, y: float, z: float) -> np.ndarray:
 
     theta_hat = float(np.arccos(z_n))
     phi_hat = float(np.mod(np.arctan2(y_n, x_n), 2 * np.pi))
-
     return state_from_angles(theta_hat, phi_hat)
 
 
@@ -156,7 +115,6 @@ def estimate_state_from_counts(
     x_counts: np.ndarray,
     y_counts: np.ndarray,
 ) -> np.ndarray:
-    """Estimate a pure-state qubit from X/Y/Z counts."""
     x_hat, y_hat, z_hat = estimate_bloch_from_counts(z_counts, x_counts, y_counts)
     return bloch_to_state(x_hat, y_hat, z_hat)
 
@@ -164,7 +122,8 @@ def estimate_state_from_counts(
 # ========================
 # RL state and policy
 # ========================
-ACTIONS = ["Z", "X", "Y"]
+ACTIONS = ("Z", "X", "Y")
+STATE_DIM = 15
 
 
 def build_state(
@@ -175,73 +134,99 @@ def build_state(
     total_shots: int,
 ) -> np.ndarray:
     """
-    Uncertainty-aware RL feature vector.
+    Three-basis extension of the finalized Experiment 2 state.
 
     Features:
       [x_hat, y_hat, z_hat,
-       x_frac, y_frac, z_frac,
        x_unc, y_unc, z_unc,
+       x_frac, y_frac, z_frac,
        x_deficit, y_deficit, z_deficit,
-       progress,
-       bias]
+       progress, allocation_imbalance, bias]
     """
     x_hat, y_hat, z_hat = estimate_bloch_from_counts(z_counts, x_counts, y_counts)
 
-    z_total = int(np.sum(z_counts))
     x_total = int(np.sum(x_counts))
     y_total = int(np.sum(y_counts))
+    z_total = int(np.sum(z_counts))
 
+    # Fractions are expressed relative to the total episode budget, matching Exp02.
     x_frac = x_total / total_shots
     y_frac = y_total / total_shots
     z_frac = z_total / total_shots
-
     progress = shots_used / total_shots
 
-    # High when few measurements have been taken in that basis
-    x_unc = 1.0 / np.sqrt(x_total + 1)
-    y_unc = 1.0 / np.sqrt(y_total + 1)
-    z_unc = 1.0 / np.sqrt(z_total + 1)
+    # Stable count-based uncertainty proxy. It remains nonzero after one shot.
+    x_unc = 1.0 / np.sqrt(x_total + 1.0)
+    y_unc = 1.0 / np.sqrt(y_total + 1.0)
+    z_unc = 1.0 / np.sqrt(z_total + 1.0)
 
-    # Positive means this basis is under-sampled relative to even XYZ allocation
     target_frac = progress / 3.0
     x_deficit = target_frac - x_frac
     y_deficit = target_frac - y_frac
     z_deficit = target_frac - z_frac
 
+    allocation_imbalance = float(
+        np.sqrt(
+            (x_frac - target_frac) ** 2
+            + (y_frac - target_frac) ** 2
+            + (z_frac - target_frac) ** 2
+        )
+    )
+
     return np.array(
         [
-            x_hat, y_hat, z_hat,
-            x_frac, y_frac, z_frac,
-            x_unc, y_unc, z_unc,
-            x_deficit, y_deficit, z_deficit,
+            x_hat,
+            y_hat,
+            z_hat,
+            x_unc,
+            y_unc,
+            z_unc,
+            x_frac,
+            y_frac,
+            z_frac,
+            x_deficit,
+            y_deficit,
+            z_deficit,
             progress,
-            1.0
+            allocation_imbalance,
+            1.0,
         ],
-        dtype=float
+        dtype=float,
     )
+
+
+def q_values(state: np.ndarray, weights: dict[str, np.ndarray]) -> dict[str, float]:
+    return {action: float(np.dot(weights[action], state)) for action in ACTIONS}
 
 
 def epsilon_greedy_action(
     state: np.ndarray,
-    w_z: np.ndarray,
-    w_x: np.ndarray,
-    w_y: np.ndarray,
+    weights: dict[str, np.ndarray],
     epsilon: float,
     rng: np.random.Generator,
 ) -> str:
-    """Epsilon-greedy action selection over Z/X/Y."""
     if rng.random() < epsilon:
-        return rng.choice(ACTIONS)
+        return str(rng.choice(ACTIONS))
 
-    q_z = float(np.dot(w_z, state))
-    q_x = float(np.dot(w_x, state))
-    q_y = float(np.dot(w_y, state))
+    values = q_values(state, weights)
+    max_q = max(values.values())
+    best_actions = [a for a, q in values.items() if np.isclose(q, max_q)]
+    return str(rng.choice(best_actions))
 
-    q_dict = {"Z": q_z, "X": q_x, "Y": q_y}
-    max_q = max(q_dict.values())
 
-    best_actions = [a for a, q in q_dict.items() if q == max_q]
-    return rng.choice(best_actions)
+def initialize_weights() -> dict[str, np.ndarray]:
+    """Small informative initialization analogous to the finalized Exp02 policy."""
+    weights = {action: np.zeros(STATE_DIM, dtype=float) for action in ACTIONS}
+
+    # Feature indices
+    unc_idx = {"X": 3, "Y": 4, "Z": 5}
+    deficit_idx = {"X": 9, "Y": 10, "Z": 11}
+
+    for action in ACTIONS:
+        weights[action][unc_idx[action]] = 0.05
+        weights[action][deficit_idx[action]] = 0.10
+
+    return weights
 
 
 # ========================
@@ -253,65 +238,43 @@ def run_fixed_strategy_episode(
     strategy: str,
     rng: np.random.Generator,
 ) -> dict:
-    """
-    Fixed strategies:
-      - Z_only
-      - ZX_split
-      - XYZ_split
-    """
     z_counts = np.array([0, 0], dtype=int)
     x_counts = np.array([0, 0], dtype=int)
     y_counts = np.array([0, 0], dtype=int)
 
     if strategy == "Z_only":
-        for _ in range(total_shots):
-            probs = measure_probs_z(psi_true)
-            outcome = sample_one_shot(probs, rng)
-            z_counts[outcome] += 1
-
+        allocation = {"Z": total_shots, "X": 0, "Y": 0}
     elif strategy == "ZX_split":
         n_z = total_shots // 2
-        n_x = total_shots - n_z
-
-        for _ in range(n_z):
-            probs = measure_probs_z(psi_true)
-            outcome = sample_one_shot(probs, rng)
-            z_counts[outcome] += 1
-
-        for _ in range(n_x):
-            probs = measure_probs_x(psi_true)
-            outcome = sample_one_shot(probs, rng)
-            x_counts[outcome] += 1
-
+        allocation = {"Z": n_z, "X": total_shots - n_z, "Y": 0}
     elif strategy == "XYZ_split":
         n_z = total_shots // 3
         n_x = total_shots // 3
-        n_y = total_shots - n_z - n_x
-
-        for _ in range(n_z):
-            probs = measure_probs_z(psi_true)
-            outcome = sample_one_shot(probs, rng)
-            z_counts[outcome] += 1
-
-        for _ in range(n_x):
-            probs = measure_probs_x(psi_true)
-            outcome = sample_one_shot(probs, rng)
-            x_counts[outcome] += 1
-
-        for _ in range(n_y):
-            probs = measure_probs_y(psi_true)
-            outcome = sample_one_shot(probs, rng)
-            y_counts[outcome] += 1
-
+        allocation = {"Z": n_z, "X": n_x, "Y": total_shots - n_z - n_x}
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
+
+    probs_by_action = {
+        "Z": measure_probs_z(psi_true),
+        "X": measure_probs_x(psi_true),
+        "Y": measure_probs_y(psi_true),
+    }
+    counts_by_action = {"Z": z_counts, "X": x_counts, "Y": y_counts}
+
+    for action, n_shots in allocation.items():
+        for _ in range(n_shots):
+            outcome = sample_one_shot(probs_by_action[action], rng)
+            counts_by_action[action][outcome] += 1
 
     psi_hat = estimate_state_from_counts(z_counts, x_counts, y_counts)
     F = fidelity(psi_true, psi_hat)
 
     return {
         "fidelity": F,
-        "infidelity": 1 - F,
+        "infidelity": 1.0 - F,
+        "z_shots": int(np.sum(z_counts)),
+        "x_shots": int(np.sum(x_counts)),
+        "y_shots": int(np.sum(y_counts)),
         "z_counts_0": int(z_counts[0]),
         "z_counts_1": int(z_counts[1]),
         "x_counts_0": int(x_counts[0]),
@@ -322,127 +285,103 @@ def run_fixed_strategy_episode(
 
 
 # ========================
-# RL episode
+# RL episode with TD learning
 # ========================
 def run_rl_episode(
     psi_true: np.ndarray,
     total_shots: int,
-    w_z: np.ndarray,
-    w_x: np.ndarray,
-    w_y: np.ndarray,
+    weights: dict[str, np.ndarray],
     epsilon: float,
     rng: np.random.Generator,
     update_weights: bool,
     learning_rate: float,
+    gamma: float,
+    imbalance_weight: float,
 ):
-    """
-    RL adaptive measurement with stepwise reward:
-      reward_step = fidelity_after - fidelity_before
-    """
-    total_shots = int(total_shots)
-
     if total_shots <= 0:
         raise ValueError(f"total_shots must be positive, got {total_shots}")
+
+    # Copy only when training, so caller explicitly receives updated arrays.
+    local_weights = {a: weights[a].copy() for a in ACTIONS}
 
     z_counts = np.array([0, 0], dtype=int)
     x_counts = np.array([0, 0], dtype=int)
     y_counts = np.array([0, 0], dtype=int)
+    counts_by_action = {"Z": z_counts, "X": x_counts, "Y": y_counts}
+    probs_by_action = {
+        "Z": measure_probs_z(psi_true),
+        "X": measure_probs_x(psi_true),
+        "Y": measure_probs_y(psi_true),
+    }
 
     shots_used = 0
 
-    # Warm start: one shot in each basis if budget allows
-    if shots_used < total_shots:
-        probs = measure_probs_z(psi_true)
-        outcome = sample_one_shot(probs, rng)
-        z_counts[outcome] += 1
-        shots_used += 1
-
-    if shots_used < total_shots:
-        probs = measure_probs_x(psi_true)
-        outcome = sample_one_shot(probs, rng)
-        x_counts[outcome] += 1
-        shots_used += 1
-
-    if shots_used < total_shots:
-        probs = measure_probs_y(psi_true)
-        outcome = sample_one_shot(probs, rng)
-        y_counts[outcome] += 1
+    # Balanced XYZ warm start.
+    for action in ACTIONS:
+        if shots_used >= total_shots:
+            break
+        outcome = sample_one_shot(probs_by_action[action], rng)
+        counts_by_action[action][outcome] += 1
         shots_used += 1
 
     psi_hat_prev = estimate_state_from_counts(z_counts, x_counts, y_counts)
     F_prev = fidelity(psi_true, psi_hat_prev)
 
-    for shot_idx in range(shots_used, total_shots):
+    while shots_used < total_shots:
         state = build_state(
             z_counts=z_counts,
             x_counts=x_counts,
             y_counts=y_counts,
-            shots_used=shot_idx,
+            shots_used=shots_used,
             total_shots=total_shots,
         )
 
         action = epsilon_greedy_action(
             state=state,
-            w_z=w_z,
-            w_x=w_x,
-            w_y=w_y,
+            weights=local_weights,
             epsilon=epsilon,
             rng=rng,
         )
 
-        if action == "Z":
-            probs = measure_probs_z(psi_true)
-            outcome = sample_one_shot(probs, rng)
-            z_counts[outcome] += 1
+        current_q = float(np.dot(local_weights[action], state))
 
-        elif action == "X":
-            probs = measure_probs_x(psi_true)
-            outcome = sample_one_shot(probs, rng)
-            x_counts[outcome] += 1
-
-        elif action == "Y":
-            probs = measure_probs_y(psi_true)
-            outcome = sample_one_shot(probs, rng)
-            y_counts[outcome] += 1
-
-        else:
-            raise ValueError(f"Unexpected action: {action!r}")
+        outcome = sample_one_shot(probs_by_action[action], rng)
+        counts_by_action[action][outcome] += 1
+        shots_used += 1
 
         psi_hat_new = estimate_state_from_counts(z_counts, x_counts, y_counts)
         F_new = fidelity(psi_true, psi_hat_new)
-
-        # Fidelity improvement reward
         fidelity_gain = F_new - F_prev
 
-        # Current measurement totals
-        z_total = int(np.sum(z_counts))
-        x_total = int(np.sum(x_counts))
-        y_total = int(np.sum(y_counts))
-        used_total = z_total + x_total + y_total
-
-        # Current allocation fractions
-        x_frac = x_total / used_total
-        y_frac = y_total / used_total
-        z_frac = z_total / used_total
-
-        # Penalize strong imbalance away from XYZ split
-        imbalance = (
-            (x_frac - 1/3) ** 2 +
-            (y_frac - 1/3) ** 2 +
-            (z_frac - 1/3) ** 2
+        used_total = shots_used
+        fractions = np.array(
+            [
+                np.sum(x_counts) / used_total,
+                np.sum(y_counts) / used_total,
+                np.sum(z_counts) / used_total,
+            ],
+            dtype=float,
         )
+        imbalance = float(np.sum((fractions - 1.0 / 3.0) ** 2))
+        reward = fidelity_gain - imbalance_weight * imbalance
 
-        imbalance_weight = 0.01
-
-        reward_step = fidelity_gain - imbalance_weight * imbalance
+        terminal = shots_used >= total_shots
+        if terminal:
+            td_target = reward
+        else:
+            next_state = build_state(
+                z_counts=z_counts,
+                x_counts=x_counts,
+                y_counts=y_counts,
+                shots_used=shots_used,
+                total_shots=total_shots,
+            )
+            max_next_q = max(q_values(next_state, local_weights).values())
+            td_target = reward + gamma * max_next_q
 
         if update_weights:
-            if action == "Z":
-                w_z = w_z + learning_rate * reward_step * state
-            elif action == "X":
-                w_x = w_x + learning_rate * reward_step * state
-            elif action == "Y":
-                w_y = w_y + learning_rate * reward_step * state
+            td_error = td_target - current_q
+            local_weights[action] += learning_rate * td_error * state
 
         F_prev = F_new
 
@@ -451,8 +390,11 @@ def run_rl_episode(
 
     result = {
         "fidelity": F,
-        "infidelity": 1 - F,
+        "infidelity": 1.0 - F,
         "reward": F,
+        "z_shots": int(np.sum(z_counts)),
+        "x_shots": int(np.sum(x_counts)),
+        "y_shots": int(np.sum(y_counts)),
         "z_counts_0": int(z_counts[0]),
         "z_counts_1": int(z_counts[1]),
         "x_counts_0": int(x_counts[0]),
@@ -461,20 +403,22 @@ def run_rl_episode(
         "y_counts_1": int(y_counts[1]),
     }
 
-    return result, w_z, w_x, w_y
+    return result, local_weights
 
 
 # ========================
 # Experiment configuration
 # ========================
 shot_budgets = [10, 25, 50, 100, 250, 500]
-num_train_episodes = 800
+num_train_episodes = 3000
 num_test_targets = 50
 num_test_seeds = 5
 
-epsilon_train = 0.15
-epsilon_test = 0.0
-learning_rate = 0.02
+epsilon_start = 0.30
+epsilon_end = 0.05
+learning_rate = 0.01
+gamma = 0.95
+imbalance_weight = 0.01
 
 master_rng = np.random.default_rng(123)
 
@@ -482,128 +426,86 @@ master_rng = np.random.default_rng(123)
 # ========================
 # Train a separate RL policy for each shot budget
 # ========================
-trained_weights = {}
+trained_weights: dict[int, dict[str, np.ndarray]] = {}
 
 for N in shot_budgets:
-    STATE_DIM = 14
+    weights = initialize_weights()
 
-    wz = np.zeros(STATE_DIM, dtype=float)
-    wx = np.zeros(STATE_DIM, dtype=float)
-    wy = np.zeros(STATE_DIM, dtype=float)
-    
     for ep in range(num_train_episodes):
-        theta = master_rng.uniform(0, np.pi)
-        phi = master_rng.uniform(0, 2 * np.pi)
+        frac = ep / max(1, num_train_episodes - 1)
+        epsilon = epsilon_start + frac * (epsilon_end - epsilon_start)
 
-        psi_true = state_from_angles(theta, phi)
+        theta, phi, psi_true = sample_uniform_pure_state(master_rng)
+        rng = np.random.default_rng(10_000_000 + 10_000 * N + ep)
 
-        rng = np.random.default_rng(10_000 * N + ep)
-
-        _, wz, wx, wy = run_rl_episode(
+        _, weights = run_rl_episode(
             psi_true=psi_true,
             total_shots=N,
-            w_z=wz,
-            w_x=wx,
-            w_y=wy,
-            epsilon=epsilon_train,
+            weights=weights,
+            epsilon=epsilon,
             rng=rng,
             update_weights=True,
             learning_rate=learning_rate,
+            gamma=gamma,
+            imbalance_weight=imbalance_weight,
         )
 
-    trained_weights[N] = (wz.copy(), wx.copy(), wy.copy())
-    print(f"Finished training RL policy for shot budget N = {N}")
+    trained_weights[N] = {a: weights[a].copy() for a in ACTIONS}
+    print(f"Finished training upgraded RL policy for shot budget N = {N}")
 
 
 # ========================
 # Evaluation
-# Compare:
-#   - Z_only
-#   - ZX_split
-#   - XYZ_split
-#   - RL_adaptive
 # ========================
 rows = []
+methods = ("Z_only", "ZX_split", "XYZ_split", "RL_adaptive")
 
+# Generate the test set once so every method sees the same states.
+test_states = []
 for target_id in range(num_test_targets):
-    true_theta = master_rng.uniform(0, np.pi)
-    true_phi = master_rng.uniform(0, 2 * np.pi)
+    true_theta, true_phi, psi_true = sample_uniform_pure_state(master_rng)
+    test_states.append((target_id, true_theta, true_phi, psi_true))
 
-    psi_true = state_from_angles(true_theta, true_phi)
-
+for target_id, true_theta, true_phi, psi_true in test_states:
     for seed in range(num_test_seeds):
         for N in shot_budgets:
-            rng = np.random.default_rng(target_id * 1000 + seed * 100 + N)
+            base_seed = 100_000_000 + target_id * 100_000 + seed * 1_000 + N
 
-            out_z = run_fixed_strategy_episode(
-                psi_true=psi_true,
-                total_shots=N,
-                strategy="Z_only",
-                rng=rng,
-            )
-            rows.append({
-                "target_id": target_id,
-                "seed": seed,
-                "N": N,
-                "method": "Z_only",
-                "true_theta": true_theta,
-                "true_phi": true_phi,
-                **out_z,
-            })
+            for method_idx, method in enumerate(methods):
+                # Independent reproducible stream per method.
+                rng = np.random.default_rng(base_seed + method_idx)
 
-            out_zx = run_fixed_strategy_episode(
-                psi_true=psi_true,
-                total_shots=N,
-                strategy="ZX_split",
-                rng=rng,
-            )
-            rows.append({
-                "target_id": target_id,
-                "seed": seed,
-                "N": N,
-                "method": "ZX_split",
-                "true_theta": true_theta,
-                "true_phi": true_phi,
-                **out_zx,
-            })
+                if method == "RL_adaptive":
+                    out, _ = run_rl_episode(
+                        psi_true=psi_true,
+                        total_shots=N,
+                        weights=trained_weights[N],
+                        epsilon=0.0,
+                        rng=rng,
+                        update_weights=False,
+                        learning_rate=learning_rate,
+                        gamma=gamma,
+                        imbalance_weight=imbalance_weight,
+                    )
+                else:
+                    out = run_fixed_strategy_episode(
+                        psi_true=psi_true,
+                        total_shots=N,
+                        strategy=method,
+                        rng=rng,
+                    )
 
-            out_xyz = run_fixed_strategy_episode(
-                psi_true=psi_true,
-                total_shots=N,
-                strategy="XYZ_split",
-                rng=rng,
-            )
-            rows.append({
-                "target_id": target_id,
-                "seed": seed,
-                "N": N,
-                "method": "XYZ_split",
-                "true_theta": true_theta,
-                "true_phi": true_phi,
-                **out_xyz,
-            })
-
-            wz, wx, wy = trained_weights[N]
-            out_rl, _, _, _ = run_rl_episode(
-                psi_true=psi_true,
-                total_shots=N,
-                w_z=wz,
-                w_x=wx,
-                w_y=wy,
-                epsilon=epsilon_test,
-                rng=rng,
-                update_weights=False,
-                learning_rate=learning_rate,
-            )
-            rows.append({
-                "target_id": target_id,
-                "seed": seed,
-                "N": N,
-                "method": "RL_adaptive",
-                "true_theta": true_theta,
-                "true_phi": true_phi,
-                **out_rl,
-            })
+                rows.append(
+                    {
+                        "target_id": target_id,
+                        "seed": seed,
+                        "N": N,
+                        "method": method,
+                        "true_theta": true_theta,
+                        "true_phi": true_phi,
+                        **out,
+                    }
+                )
 
 
 # ========================
@@ -618,15 +520,17 @@ df.to_csv(f"{run_dir}/metrics.csv", index=False)
 # ========================
 agg = (
     df.groupby(["method", "N"])
-      .agg(
-          fidelity_mean=("fidelity", "mean"),
-          fidelity_std=("fidelity", "std"),
-          infidelity_mean=("infidelity", "mean"),
-          infidelity_std=("infidelity", "std"),
-      )
-      .reset_index()
+    .agg(
+        fidelity_mean=("fidelity", "mean"),
+        fidelity_std=("fidelity", "std"),
+        infidelity_mean=("infidelity", "mean"),
+        infidelity_std=("infidelity", "std"),
+        x_shots_mean=("x_shots", "mean"),
+        y_shots_mean=("y_shots", "mean"),
+        z_shots_mean=("z_shots", "mean"),
+    )
+    .reset_index()
 )
-
 agg.to_csv(f"{run_dir}/summary.csv", index=False)
 
 
@@ -642,7 +546,11 @@ def plot_metric(metric_mean, metric_std, ylabel, title, filename, logy=False):
         ystd = sub[metric_std].to_numpy()
 
         plt.plot(x, y, marker="o", label=method)
-        plt.fill_between(x, y - ystd, y + ystd, alpha=0.2)
+        lower = y - ystd
+        upper = y + ystd
+        if logy:
+            lower = np.maximum(lower, 1e-12)
+        plt.fill_between(x, lower, upper, alpha=0.2)
 
     plt.xscale("log")
     if logy:
@@ -656,14 +564,11 @@ def plot_metric(metric_mean, metric_std, ylabel, title, filename, logy=False):
     plt.close()
 
 
-# ========================
-# Make plots
-# ========================
 plot_metric(
     metric_mean="fidelity_mean",
     metric_std="fidelity_std",
     ylabel="Mean Fidelity",
-    title="Exp03: Generalized 1-Qubit State Estimation (Fidelity vs Shots)",
+    title="Exp03 Upgraded: Generalized 1-Qubit State Estimation (Fidelity vs Shots)",
     filename="fidelity_vs_shots.png",
     logy=False,
 )
@@ -672,28 +577,47 @@ plot_metric(
     metric_mean="infidelity_mean",
     metric_std="infidelity_std",
     ylabel="Mean Infidelity",
-    title="Exp03: Generalized 1-Qubit State Estimation (Infidelity vs Shots)",
+    title="Exp03 Upgraded: Generalized 1-Qubit State Estimation (Infidelity vs Shots)",
     filename="infidelity_vs_shots.png",
     logy=True,
 )
+
+
+# RL allocation plot
+rl_alloc = agg[agg["method"] == "RL_adaptive"].sort_values("N")
+plt.figure()
+plt.plot(rl_alloc["N"], rl_alloc["x_shots_mean"], marker="o", label="X shots")
+plt.plot(rl_alloc["N"], rl_alloc["y_shots_mean"], marker="o", label="Y shots")
+plt.plot(rl_alloc["N"], rl_alloc["z_shots_mean"], marker="o", label="Z shots")
+plt.xscale("log")
+plt.xlabel("Shots (N)")
+plt.ylabel("Mean Number of Measurements")
+plt.title("Exp03 Upgraded: RL Measurement Allocation")
+plt.legend()
+plt.tight_layout()
+plt.savefig(f"{run_dir}/rl_allocation_vs_shots.png", dpi=200)
+plt.close()
 
 
 # ========================
 # Notes file
 # ========================
 with open(f"{run_dir}/notes.txt", "w") as f:
-    f.write("Experiment: Exp03 - generalized 1-qubit adaptive measurement\n")
-    f.write("State family: full pure 1-qubit states parameterized by (theta, phi)\n")
+    f.write("Experiment: Exp03 - upgraded generalized one-qubit adaptive measurement\n")
+    f.write("State family: pure one-qubit states sampled uniformly on the Bloch sphere\n")
     f.write("Methods: Z_only, ZX_split, XYZ_split, RL_adaptive\n")
     f.write("RL actions: Z, X, Y\n")
-    f.write("RL reward: stepwise fidelity improvement\n")
+    f.write("RL update: one-step TD/Q-learning with linear function approximation\n")
+    f.write("RL reward: fidelity improvement minus small allocation imbalance penalty\n")
     f.write(f"Shot budgets: {shot_budgets}\n")
     f.write(f"Training episodes per shot budget: {num_train_episodes}\n")
     f.write(f"Test targets: {num_test_targets}\n")
     f.write(f"Test seeds: {num_test_seeds}\n")
-    f.write(f"Epsilon train: {epsilon_train}\n")
-    f.write(f"Epsilon test: {epsilon_test}\n")
+    f.write(f"Epsilon schedule: {epsilon_start} -> {epsilon_end}\n")
+    f.write("Evaluation epsilon: 0.0\n")
     f.write(f"Learning rate: {learning_rate}\n")
+    f.write(f"Gamma: {gamma}\n")
+    f.write(f"Imbalance penalty weight: {imbalance_weight}\n")
 
 
 print("Saved results to:", run_dir)
@@ -702,4 +626,5 @@ print("- metrics.csv")
 print("- summary.csv")
 print("- fidelity_vs_shots.png")
 print("- infidelity_vs_shots.png")
+print("- rl_allocation_vs_shots.png")
 print("- notes.txt")
