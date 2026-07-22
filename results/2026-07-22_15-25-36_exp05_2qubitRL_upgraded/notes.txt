@@ -1,0 +1,15 @@
+Experiment: Exp05 - upgraded two-qubit RL
+Scope: two-qubit product-state estimation
+Actions: ZZ, ZX, ZY, XZ, XX, XY, YZ, YX, YY
+Warm start: ZZ, XX, YY
+Learning: one-step TD learning
+Gamma: 0.95
+Training episodes per shot budget: 3000
+Epsilon schedule: 0.3 to 0.05
+Evaluation epsilon: 0.0
+Learning rate: 0.01
+Imbalance penalty weight: 0.005
+Shot budgets: [10, 25, 50, 100, 250, 500]
+Test targets: 50
+Test seeds: 5
+Training and test states sampled uniformly on each Bloch sphere.
