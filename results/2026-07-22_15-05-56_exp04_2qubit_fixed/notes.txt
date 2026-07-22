@@ -1,0 +1,6 @@
+Experiment: Exp04 - 2-qubit fixed strategies
+State family: two independent pure qubits
+Methods: Z_only, ZX_split, XYZ_split
+Shot budgets: [10, 25, 50, 100, 250, 500]
+Test targets: 50
+Test seeds: 5
