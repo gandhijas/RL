@@ -1,0 +1,7 @@
+Experiment: Exp06 corrected budget stress test
+Important correction: all X/Y/Z count arrays are independent.
+Training and test states are sampled uniformly on the Bloch sphere.
+One RL policy is trained for every evaluated shot budget.
+Warm-start measurements count toward the stated shot budget.
+Main plots use 95% confidence intervals for the mean.
+Paired RL-vs-XYZ fidelity differences and win rates are saved.
