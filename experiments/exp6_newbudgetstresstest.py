@@ -6,25 +6,33 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+
 # ========================
 # Run directory
 # ========================
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-run_dir = f"results/{timestamp}_exp06_budgetstress_corrected"
+run_dir = f"results/{timestamp}_exp06_budgetstress_rl_upgraded"
 os.makedirs(run_dir, exist_ok=True)
+
 
 # ========================
 # Quantum utilities
 # ========================
 def state_from_angles(theta: float, phi: float) -> np.ndarray:
+    """Single-qubit pure state."""
     return np.array(
-        [np.cos(theta / 2), np.exp(1j * phi) * np.sin(theta / 2)],
+        [
+            np.cos(theta / 2),
+            np.exp(1j * phi) * np.sin(theta / 2),
+        ],
         dtype=complex,
     )
 
 
-def sample_uniform_qubit_state(rng: np.random.Generator) -> Tuple[np.ndarray, float, float]:
-    """Sample a pure qubit uniformly from the Bloch sphere."""
+def sample_uniform_qubit_state(
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, float, float]:
+    """Sample a pure qubit state uniformly from the Bloch sphere."""
     z = rng.uniform(-1.0, 1.0)
     theta = float(np.arccos(z))
     phi = float(rng.uniform(0.0, 2.0 * np.pi))
@@ -32,6 +40,7 @@ def sample_uniform_qubit_state(rng: np.random.Generator) -> Tuple[np.ndarray, fl
 
 
 def fidelity(psi: np.ndarray, phi: np.ndarray) -> float:
+    """Pure-state fidelity |<psi|phi>|^2."""
     return float(np.abs(np.vdot(psi, phi)) ** 2)
 
 
@@ -44,7 +53,7 @@ def s_dagger() -> np.ndarray:
 
 
 # ========================
-# Measurement probabilities
+# Measurement utilities
 # ========================
 def measure_probs_z(psi: np.ndarray) -> np.ndarray:
     p = np.abs(psi) ** 2
@@ -78,7 +87,7 @@ def sample_one_shot(probs: np.ndarray, rng: np.random.Generator) -> int:
 
 
 # ========================
-# Bloch estimation
+# Estimation utilities
 # ========================
 def estimate_bloch_from_counts(
     z_counts: np.ndarray,
@@ -99,8 +108,10 @@ def bloch_to_state(x: float, y: float, z: float) -> np.ndarray:
     norm = np.linalg.norm(r)
     if norm < 1e-12:
         return np.array([1.0, 0.0], dtype=complex)
+
     x_n, y_n, z_n = r / norm
-    theta_hat = float(np.arccos(np.clip(z_n, -1.0, 1.0)))
+    z_n = float(np.clip(z_n, -1.0, 1.0))
+    theta_hat = float(np.arccos(z_n))
     phi_hat = float(np.mod(np.arctan2(y_n, x_n), 2 * np.pi))
     return state_from_angles(theta_hat, phi_hat)
 
@@ -114,15 +125,6 @@ def estimate_state_from_counts(
     return bloch_to_state(x_hat, y_hat, z_hat)
 
 
-def fresh_counts() -> Dict[str, np.ndarray]:
-    """Return independent count arrays. Avoids the shared-array aliasing bug."""
-    return {
-        "Z": np.array([0, 0], dtype=int),
-        "X": np.array([0, 0], dtype=int),
-        "Y": np.array([0, 0], dtype=int),
-    }
-
-
 # ========================
 # RL setup
 # ========================
@@ -131,12 +133,33 @@ ACTIONS = [
     ("X", "Z"), ("X", "X"), ("X", "Y"),
     ("Y", "Z"), ("Y", "X"), ("Y", "Y"),
 ]
-STATE_DIM = 14
+ACTION_NAMES = [a + b for a, b in ACTIONS]
+ACTION_INDEX = {action: i for i, action in enumerate(ACTIONS)}
+
+# 6 Bloch estimates + 6 uncertainties + 9 action fractions +
+# 9 action deficits + progress + imbalance + bias = 33
+STATE_DIM = 33
+
+
+def fresh_counts() -> Dict[str, np.ndarray]:
+    """Create independent count arrays for X/Y/Z."""
+    return {
+        "Z": np.array([0, 0], dtype=int),
+        "X": np.array([0, 0], dtype=int),
+        "Y": np.array([0, 0], dtype=int),
+    }
+
+
+def measurement_uncertainty(counts: np.ndarray) -> float:
+    """Simple count-based uncertainty proxy with finite value at zero shots."""
+    total = int(np.sum(counts))
+    return float(1.0 / np.sqrt(total + 1.0))
 
 
 def build_state(
     counts1: Dict[str, np.ndarray],
     counts2: Dict[str, np.ndarray],
+    action_counts: np.ndarray,
     shots_used: int,
     total_shots: int,
 ) -> np.ndarray:
@@ -147,27 +170,50 @@ def build_state(
         counts2["Z"], counts2["X"], counts2["Y"]
     )
 
-    total1 = sum(int(np.sum(counts1[b])) for b in ["Z", "X", "Y"])
-    total2 = sum(int(np.sum(counts2[b])) for b in ["Z", "X", "Y"])
-
-    frac_z1 = np.sum(counts1["Z"]) / total1 if total1 > 0 else 0.0
-    frac_x1 = np.sum(counts1["X"]) / total1 if total1 > 0 else 0.0
-    frac_y1 = np.sum(counts1["Y"]) / total1 if total1 > 0 else 0.0
-    frac_z2 = np.sum(counts2["Z"]) / total2 if total2 > 0 else 0.0
-    frac_x2 = np.sum(counts2["X"]) / total2 if total2 > 0 else 0.0
-    frac_y2 = np.sum(counts2["Y"]) / total2 if total2 > 0 else 0.0
-
-    progress = shots_used / total_shots if total_shots > 0 else 0.0
-    return np.array(
+    uncertainties = np.array(
         [
-            x1_hat, y1_hat, z1_hat,
-            x2_hat, y2_hat, z2_hat,
-            frac_z1, frac_x1, frac_y1,
-            frac_z2, frac_x2, frac_y2,
-            progress, 1.0,
+            measurement_uncertainty(counts1["X"]),
+            measurement_uncertainty(counts1["Y"]),
+            measurement_uncertainty(counts1["Z"]),
+            measurement_uncertainty(counts2["X"]),
+            measurement_uncertainty(counts2["Y"]),
+            measurement_uncertainty(counts2["Z"]),
         ],
         dtype=float,
     )
+
+    progress = shots_used / total_shots if total_shots > 0 else 0.0
+    action_fracs = action_counts.astype(float) / total_shots
+    target_frac = progress / len(ACTIONS)
+    action_deficits = target_frac - action_fracs
+
+    used = int(np.sum(action_counts))
+    if used > 0:
+        current_fracs = action_counts / used
+        imbalance = float(np.sum((current_fracs - 1.0 / len(ACTIONS)) ** 2))
+    else:
+        imbalance = 0.0
+
+    state = np.concatenate(
+        [
+            np.array(
+                [x1_hat, y1_hat, z1_hat, x2_hat, y2_hat, z2_hat],
+                dtype=float,
+            ),
+            uncertainties,
+            action_fracs,
+            action_deficits,
+            np.array([progress, imbalance, 1.0], dtype=float),
+        ]
+    )
+
+    if state.shape[0] != STATE_DIM:
+        raise RuntimeError(f"State dimension mismatch: {state.shape[0]} != {STATE_DIM}")
+    return state
+
+
+def q_values(state: np.ndarray, weights: Dict[Tuple[str, str], np.ndarray]) -> np.ndarray:
+    return np.array([float(np.dot(weights[a], state)) for a in ACTIONS], dtype=float)
 
 
 def epsilon_greedy(
@@ -179,12 +225,35 @@ def epsilon_greedy(
     if rng.random() < epsilon:
         return ACTIONS[int(rng.integers(len(ACTIONS)))]
 
-    q_vals = np.array([np.dot(weights[a], state) for a in ACTIONS], dtype=float)
-    max_q = np.max(q_vals)
-    best = np.flatnonzero(np.isclose(q_vals, max_q))
-    return ACTIONS[int(rng.choice(best))]
+    values = q_values(state, weights)
+    max_q = np.max(values)
+    best_indices = np.flatnonzero(np.isclose(values, max_q))
+    return ACTIONS[int(rng.choice(best_indices))]
 
 
+def initialize_weights() -> Dict[Tuple[str, str], np.ndarray]:
+    """Small informative initialization favoring uncertainty and deficits."""
+    weights = {}
+    for action in ACTIONS:
+        w = np.zeros(STATE_DIM, dtype=float)
+        idx = ACTION_INDEX[action]
+
+        # Basis-specific uncertainty positions.
+        b1, b2 = action
+        unc_idx_q1 = {"X": 6, "Y": 7, "Z": 8}[b1]
+        unc_idx_q2 = {"X": 9, "Y": 10, "Z": 11}[b2]
+        w[unc_idx_q1] = 0.05
+        w[unc_idx_q2] = 0.05
+
+        # Action deficit feature starts at index 21.
+        w[21 + idx] = 0.05
+        weights[action] = w
+    return weights
+
+
+# ========================
+# Episode helpers
+# ========================
 def apply_joint_measurement(
     psi1: np.ndarray,
     psi2: np.ndarray,
@@ -222,40 +291,76 @@ def run_rl_episode(
     epsilon: float,
     rng: np.random.Generator,
     update_weights: bool,
-    lr: float,
+    learning_rate: float,
+    gamma: float,
+    imbalance_weight: float,
+    terminal_bonus_weight: float,
 ):
     if total_shots <= 0:
         raise ValueError("total_shots must be positive")
 
     counts1 = fresh_counts()
     counts2 = fresh_counts()
+    action_counts = np.zeros(len(ACTIONS), dtype=int)
     shots_used = 0
 
-    # Warm start uses at most the available budget; it does not add extra shots.
+    # Warm start: one matched-basis joint measurement in ZZ, XX, and YY.
     for action in [("Z", "Z"), ("X", "X"), ("Y", "Y")]:
         if shots_used >= total_shots:
             break
         apply_joint_measurement(psi1, psi2, action, counts1, counts2, rng)
+        action_counts[ACTION_INDEX[action]] += 1
         shots_used += 1
 
     f_prev = product_fidelity_from_counts(psi1, psi2, counts1, counts2)
 
-    for t in range(shots_used, total_shots):
-        state = build_state(counts1, counts2, t, total_shots)
+    for shot_idx in range(shots_used, total_shots):
+        state = build_state(counts1, counts2, action_counts, shot_idx, total_shots)
         action = epsilon_greedy(state, weights, epsilon, rng)
+        action_idx = ACTION_INDEX[action]
+
+        q_current = float(np.dot(weights[action], state))
+
         apply_joint_measurement(psi1, psi2, action, counts1, counts2, rng)
+        action_counts[action_idx] += 1
 
         f_new = product_fidelity_from_counts(psi1, psi2, counts1, counts2)
-        reward = f_new - f_prev
+        fidelity_gain = f_new - f_prev
+
+        used = int(np.sum(action_counts))
+        current_fracs = action_counts / used
+        imbalance = float(np.sum((current_fracs - 1.0 / len(ACTIONS)) ** 2))
+        terminal = shot_idx == total_shots - 1
+        reward = fidelity_gain - imbalance_weight * imbalance
+        if terminal:
+            reward += terminal_bonus_weight * f_new
+        if terminal:
+            q_next = 0.0
+        else:
+            next_state = build_state(
+                counts1, counts2, action_counts, shot_idx + 1, total_shots
+            )
+            q_next = float(np.max(q_values(next_state, weights)))
+
         if update_weights:
-            weights[action] += lr * reward * state
+            td_target = reward + gamma * q_next
+            td_error = td_target - q_current
+            weights[action] += learning_rate * td_error * state
+
         f_prev = f_new
 
-    return {"fidelity": f_prev, "infidelity": 1.0 - f_prev}, weights
+    result = {
+        "fidelity": f_prev,
+        "infidelity": 1.0 - f_prev,
+    }
+    for i, name in enumerate(ACTION_NAMES):
+        result[f"shots_{name}"] = int(action_counts[i])
+
+    return result, weights
 
 
 # ========================
-# Fixed strategies
+# Fixed strategy episode
 # ========================
 def run_fixed_strategy_episode(
     psi1: np.ndarray,
@@ -271,7 +376,8 @@ def run_fixed_strategy_episode(
         schedule = [("Z", "Z")] * total_shots
     elif strategy == "ZX_split":
         n_z = total_shots // 2
-        schedule = [("Z", "Z")] * n_z + [("X", "X")] * (total_shots - n_z)
+        n_x = total_shots - n_z
+        schedule = [("Z", "Z")] * n_z + [("X", "X")] * n_x
     elif strategy == "XYZ_split":
         n_z = total_shots // 3
         n_x = total_shots // 3
@@ -292,52 +398,81 @@ def run_fixed_strategy_episode(
 
 
 # ========================
-# Experiment setup
+# Experiment configuration
 # ========================
-stress_shot_budgets = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
-training_budgets = stress_shot_budgets  # train a policy for every evaluated budget
+shot_budgets = [3, 6, 9, 12, 15, 20, 25, 30, 40, 50, 75, 100]
+num_train_episodes = 5000
 num_test_targets = 50
 num_test_seeds = 5
-epsilon_train = 0.15
+
+epsilon_start = 0.35
+epsilon_end = 0.03
 epsilon_test = 0.0
-learning_rate = 0.02
-num_train_episodes = 800
+learning_rate = 0.008
+gamma = 0.95
+imbalance_weight = 0.0
+terminal_bonus_weight = 0.15
+
 master_rng = np.random.default_rng(123)
 
 
 # ========================
-# Train RL
+# Train one policy per shot budget
 # ========================
 trained_weights = {}
-for N in training_budgets:
-    weights = {a: np.zeros(STATE_DIM, dtype=float) for a in ACTIONS}
+
+for N in shot_budgets:
+    weights = initialize_weights()
+
     for ep in range(num_train_episodes):
         psi1, _, _ = sample_uniform_qubit_state(master_rng)
         psi2, _, _ = sample_uniform_qubit_state(master_rng)
+
+        frac = ep / max(num_train_episodes - 1, 1)
+        epsilon = epsilon_start + frac * (epsilon_end - epsilon_start)
+
         rng = np.random.default_rng(10_000_000 + 10_000 * N + ep)
         _, weights = run_rl_episode(
-            psi1, psi2, N, weights, epsilon_train, rng, True, learning_rate
+            psi1=psi1,
+            psi2=psi2,
+            total_shots=N,
+            weights=weights,
+            epsilon=epsilon,
+            rng=rng,
+            update_weights=True,
+            learning_rate=learning_rate,
+            gamma=gamma,
+            imbalance_weight=imbalance_weight,
+            terminal_bonus_weight=terminal_bonus_weight,
         )
+
     trained_weights[N] = {a: w.copy() for a, w in weights.items()}
-    print(f"Finished training N={N}")
+    print(f"Finished training RL policy for N = {N}")
 
 
 # ========================
-# Run stress test
+# Evaluation
 # ========================
-stress_rows = []
+rows = []
+
 for target_id in range(num_test_targets):
     psi1, theta1, phi1 = sample_uniform_qubit_state(master_rng)
     psi2, theta2, phi2 = sample_uniform_qubit_state(master_rng)
 
     for seed in range(num_test_seeds):
-        for N in stress_shot_budgets:
+        for N in shot_budgets:
             base_seed = target_id * 1_000_000 + seed * 10_000 + N * 10
 
             for method_index, strategy in enumerate(["Z_only", "ZX_split", "XYZ_split"]):
                 rng = np.random.default_rng(base_seed + method_index + 1)
-                out = run_fixed_strategy_episode(psi1, psi2, N, strategy, rng)
-                stress_rows.append(
+                out = run_fixed_strategy_episode(
+                    psi1=psi1,
+                    psi2=psi2,
+                    total_shots=N,
+                    strategy=strategy,
+                    rng=rng,
+                )
+                rows.append(
                     {
                         "target_id": target_id,
                         "seed": seed,
@@ -353,16 +488,19 @@ for target_id in range(num_test_targets):
 
             rng_rl = np.random.default_rng(base_seed + 4)
             out_rl, _ = run_rl_episode(
-                psi1,
-                psi2,
-                N,
-                {a: w.copy() for a, w in trained_weights[N].items()},
-                epsilon_test,
-                rng_rl,
-                False,
-                learning_rate,
+                psi1=psi1,
+                psi2=psi2,
+                total_shots=N,
+                weights={a: w.copy() for a, w in trained_weights[N].items()},
+                epsilon=epsilon_test,
+                rng=rng_rl,
+                update_weights=False,
+                learning_rate=learning_rate,
+                gamma=gamma,
+                imbalance_weight=imbalance_weight,
+                terminal_bonus_weight=terminal_bonus_weight,
             )
-            stress_rows.append(
+            rows.append(
                 {
                     "target_id": target_id,
                     "seed": seed,
@@ -378,59 +516,89 @@ for target_id in range(num_test_targets):
 
 
 # ========================
-# Save summaries
+# Save raw metrics and summary
 # ========================
-stress_df = pd.DataFrame(stress_rows)
-stress_df.to_csv(f"{run_dir}/stress_metrics.csv", index=False)
+df = pd.DataFrame(rows)
+df.to_csv(f"{run_dir}/metrics.csv", index=False)
 
-stress_agg = (
-    stress_df.groupby(["method", "N"])
+summary = (
+    df.groupby(["method", "N"])
     .agg(
         fidelity_mean=("fidelity", "mean"),
         fidelity_std=("fidelity", "std"),
-        fidelity_count=("fidelity", "count"),
         infidelity_mean=("infidelity", "mean"),
         infidelity_std=("infidelity", "std"),
-        infidelity_count=("infidelity", "count"),
     )
     .reset_index()
 )
-stress_agg["fidelity_ci95"] = 1.96 * stress_agg["fidelity_std"] / np.sqrt(stress_agg["fidelity_count"])
-stress_agg["infidelity_ci95"] = 1.96 * stress_agg["infidelity_std"] / np.sqrt(stress_agg["infidelity_count"])
-stress_agg.to_csv(f"{run_dir}/stress_summary.csv", index=False)
+summary.to_csv(f"{run_dir}/summary.csv", index=False)
+
+allocation_cols = [f"shots_{name}" for name in ACTION_NAMES]
+rl_df = df[df["method"] == "RL_adaptive"].copy()
+allocation_summary = (
+    rl_df.groupby("N")[allocation_cols]
+    .mean()
+    .reset_index()
+)
+allocation_summary.to_csv(f"{run_dir}/rl_allocation_summary.csv", index=False)
+
+# Paired RL-versus-XYZ analysis on identical targets and seeds.
+paired = (
+    df[df["method"].isin(["RL_adaptive", "XYZ_split"])]
+    .pivot_table(
+        index=["target_id", "seed", "N"],
+        columns="method",
+        values="fidelity",
+    )
+    .dropna()
+    .reset_index()
+)
+paired["delta_fidelity"] = paired["RL_adaptive"] - paired["XYZ_split"]
+paired_summary = (
+    paired.groupby("N")
+    .agg(
+        delta_mean=("delta_fidelity", "mean"),
+        delta_std=("delta_fidelity", "std"),
+        count=("delta_fidelity", "count"),
+        rl_win_rate=("delta_fidelity", lambda x: float(np.mean(x > 0))),
+    )
+    .reset_index()
+)
+paired_summary["delta_sem"] = paired_summary["delta_std"] / np.sqrt(
+    paired_summary["count"]
+)
+paired_summary["delta_ci95"] = 1.96 * paired_summary["delta_sem"]
+paired_summary.to_csv(f"{run_dir}/rl_vs_xyz_paired_summary.csv", index=False)
 
 
 # ========================
 # Plot helpers
 # ========================
 def plot_metric(
-    mean_col: str,
-    ci_col: str,
+    metric_mean: str,
+    metric_std: str,
     ylabel: str,
     title: str,
     filename: str,
-    log_y: bool = False,
+    logy: bool = False,
 ) -> None:
-    plt.figure(figsize=(10, 7))
-    for method in stress_agg["method"].unique():
-        sub = stress_agg[stress_agg["method"] == method].sort_values("N")
+    plt.figure()
+    for method in summary["method"].unique():
+        sub = summary[summary["method"] == method].sort_values("N")
         x = sub["N"].to_numpy()
-        y = sub[mean_col].to_numpy()
-        ci = sub[ci_col].to_numpy()
+        y = sub[metric_mean].to_numpy()
+        y_std = sub[metric_std].to_numpy()
 
-        lower = y - ci
-        upper = y + ci
-        if "fidelity" in mean_col and "infidelity" not in mean_col:
-            lower = np.clip(lower, 0.0, 1.0)
-            upper = np.clip(upper, 0.0, 1.0)
-        if log_y:
+        lower = y - y_std
+        upper = y + y_std
+        if logy:
             lower = np.maximum(lower, 1e-12)
 
-        plt.plot(x, y, marker="o", linewidth=2, label=method)
+        plt.plot(x, y, marker="o", label=method)
         plt.fill_between(x, lower, upper, alpha=0.2)
 
     plt.xscale("log")
-    if log_y:
+    if logy:
         plt.yscale("log")
     plt.xlabel("Shots (N)")
     plt.ylabel(ylabel)
@@ -442,64 +610,51 @@ def plot_metric(
 
 
 plot_metric(
-    "infidelity_mean",
-    "infidelity_ci95",
-    "Mean Infidelity",
-    "2-Qubit RL vs Fixed Strategies - Budget Stress Test",
-    "stress_infidelity.png",
-    log_y=True,
+    metric_mean="fidelity_mean",
+    metric_std="fidelity_std",
+    ylabel="Mean Fidelity",
+    title="Exp06: 2-Qubit Budget Stress Test (Fidelity vs Shots)",
+    filename="fidelity_vs_shots.png",
+    logy=False,
 )
 
 plot_metric(
-    "fidelity_mean",
-    "fidelity_ci95",
-    "Mean Fidelity",
-    "2-Qubit RL vs Fixed Strategies - Budget Stress Test",
-    "stress_fidelity.png",
-    log_y=False,
+    metric_mean="infidelity_mean",
+    metric_std="infidelity_std",
+    ylabel="Mean Infidelity",
+    title="Exp06: 2-Qubit Budget Stress Test (Infidelity vs Shots)",
+    filename="infidelity_vs_shots.png",
+    logy=True,
 )
 
-
-# ========================
-# Paired RL-vs-XYZ analysis
-# ========================
-paired = (
-    stress_df[stress_df["method"].isin(["RL_adaptive", "XYZ_split"])]
-    .pivot_table(
-        index=["target_id", "seed", "N"],
-        columns="method",
-        values="fidelity",
+plt.figure()
+for name in ACTION_NAMES:
+    plt.plot(
+        allocation_summary["N"],
+        allocation_summary[f"shots_{name}"],
+        marker="o",
+        label=name,
     )
-    .dropna()
-    .reset_index()
-)
-paired["delta_fidelity"] = paired["RL_adaptive"] - paired["XYZ_split"]
-paired.to_csv(f"{run_dir}/rl_vs_xyz_paired_metrics.csv", index=False)
+plt.xscale("log")
+plt.xlabel("Shots (N)")
+plt.ylabel("Mean RL Measurements")
+plt.title("Exp05 Upgraded: RL Joint-Action Allocation")
+plt.legend(ncol=3)
+plt.tight_layout()
+plt.savefig(f"{run_dir}/rl_allocation_vs_shots.png", dpi=200)
+plt.close()
 
-paired_summary = (
-    paired.groupby("N")
-    .agg(
-        delta_mean=("delta_fidelity", "mean"),
-        delta_std=("delta_fidelity", "std"),
-        count=("delta_fidelity", "count"),
-        rl_win_rate=("delta_fidelity", lambda x: float(np.mean(x > 0))),
-    )
-    .reset_index()
-)
-paired_summary["delta_ci95"] = 1.96 * paired_summary["delta_std"] / np.sqrt(paired_summary["count"])
-paired_summary.to_csv(f"{run_dir}/rl_vs_xyz_paired_summary.csv", index=False)
-
-plt.figure(figsize=(10, 7))
+plt.figure()
 x = paired_summary["N"].to_numpy()
 y = paired_summary["delta_mean"].to_numpy()
 ci = paired_summary["delta_ci95"].to_numpy()
 plt.axhline(0.0, linestyle="--", linewidth=1)
-plt.plot(x, y, marker="o", linewidth=2)
+plt.plot(x, y, marker="o")
 plt.fill_between(x, y - ci, y + ci, alpha=0.2)
 plt.xscale("log")
 plt.xlabel("Shots (N)")
 plt.ylabel(r"$\Delta F = F_{RL} - F_{XYZ}$")
-plt.title("Paired RL Advantage over XYZ - Budget Stress Test")
+plt.title("Exp06: Paired RL Advantage over XYZ")
 plt.tight_layout()
 plt.savefig(f"{run_dir}/rl_vs_xyz_delta_fidelity.png", dpi=200)
 plt.close()
@@ -509,21 +664,31 @@ plt.close()
 # Notes
 # ========================
 with open(f"{run_dir}/notes.txt", "w", encoding="utf-8") as f:
-    f.write("Experiment: Exp06 corrected budget stress test\n")
-    f.write("Important correction: all X/Y/Z count arrays are independent.\n")
-    f.write("Training and test states are sampled uniformly on the Bloch sphere.\n")
-    f.write("One RL policy is trained for every evaluated shot budget.\n")
-    f.write("Warm-start measurements count toward the stated shot budget.\n")
-    f.write("Main plots use 95% confidence intervals for the mean.\n")
-    f.write("Paired RL-vs-XYZ fidelity differences and win rates are saved.\n")
+    f.write("Experiment: Exp06 - upgraded two-qubit RL budget stress test\n")
+    f.write("Scope: two-qubit product-state estimation\n")
+    f.write("Actions: ZZ, ZX, ZY, XZ, XX, XY, YZ, YX, YY\n")
+    f.write("Warm start: ZZ, XX, YY\n")
+    f.write("Learning: one-step TD learning\n")
+    f.write(f"Gamma: {gamma}\n")
+    f.write(f"Training episodes per shot budget: {num_train_episodes}\n")
+    f.write(f"Epsilon schedule: {epsilon_start} to {epsilon_end}\n")
+    f.write(f"Evaluation epsilon: {epsilon_test}\n")
+    f.write(f"Learning rate: {learning_rate}\n")
+    f.write(f"Imbalance penalty weight: {imbalance_weight}\n")
+    f.write(f"Terminal fidelity bonus weight: {terminal_bonus_weight}\n")
+    f.write(f"Shot budgets: {shot_budgets}\n")
+    f.write(f"Test targets: {num_test_targets}\n")
+    f.write(f"Test seeds: {num_test_seeds}\n")
+    f.write("Training and test states sampled uniformly on each Bloch sphere.\n")
 
-print("Stress test completed. Results saved to:", run_dir)
+print("Saved results to:", run_dir)
 print("Files created:")
-print("- stress_metrics.csv")
-print("- stress_summary.csv")
-print("- stress_infidelity.png")
-print("- stress_fidelity.png")
-print("- rl_vs_xyz_paired_metrics.csv")
+print("- metrics.csv")
+print("- summary.csv")
+print("- rl_allocation_summary.csv")
+print("- fidelity_vs_shots.png")
+print("- infidelity_vs_shots.png")
+print("- rl_allocation_vs_shots.png")
 print("- rl_vs_xyz_paired_summary.csv")
 print("- rl_vs_xyz_delta_fidelity.png")
 print("- notes.txt")
