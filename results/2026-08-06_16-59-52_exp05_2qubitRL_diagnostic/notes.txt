@@ -1,0 +1,19 @@
+Experiment: Exp05 audited two-qubit RL
+Scope: two-qubit product-state estimation
+State family and baselines unchanged from the uploaded experiment.
+RL action space: nine joint Pauli settings.
+Warm start: ZZ, XX, YY, counted inside the shot budget.
+Learning: one-step TD learning with incremental fidelity and a terminal-fidelity bonus.
+No reward penalty forces uniform joint-action allocation.
+State features use local Bloch estimates, uncertainty, local allocation, joint-action fractions, and progress.
+Multiple independent training restarts are selected using a validation set separate from final testing.
+Training episodes per restart: 1000
+Training restarts: 2
+Epsilon schedule: 0.35 to 0.02
+Learning rate: 0.006
+Gamma: 0.95
+Terminal bonus weight: 0.2
+Shot budgets: [10, 25, 50, 100, 250, 500]
+Validation targets: 15
+Test targets: 20
+Test seeds: 3
