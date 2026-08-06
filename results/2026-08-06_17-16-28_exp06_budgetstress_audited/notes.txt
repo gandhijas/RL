@@ -1,0 +1,15 @@
+Experiment 6: audited two-qubit budget stress test
+Scope: two-qubit product-state estimation
+One independent RL policy was trained for every tested shot budget.
+RL uses one-step TD learning, epsilon decay, a terminal fidelity bonus, multiple restarts, and validation selection.
+Warm-start measurements are counted inside the budget.
+Stress budgets: [1, 2, 5, 10, 25, 50, 100, 250, 500]
+Training episodes per restart: 2500
+Training restarts: 3
+Validation targets: 25
+Test targets: 100
+Test seeds: 5
+Epsilon schedule: 0.35 to 0.02
+Learning rate: 0.006
+Gamma: 0.95
+Terminal bonus weight: 0.2
