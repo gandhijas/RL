@@ -1,0 +1,15 @@
+Experiment 8: audited two-qubit drift tracking
+Target: estimate the current drifting product state.
+Primary metric: mean online tracking fidelity.
+Secondary metric: final-state fidelity.
+Drift is persistent within each episode and randomized between episodes.
+Every method uses the same exponentially decayed estimator.
+The strongest fixed baseline is interleaved XX, YY, ZZ.
+Long-memory decay: 0.985
+Recent-memory decay: 0.9
+Shot budgets: [10, 25, 50, 100, 250]
+Drift levels: [0.0, 0.0025, 0.005, 0.01]
+Training episodes per restart: 3000
+Training restarts: 3
+Test targets: 60
+Test seeds: 4
