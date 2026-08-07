@@ -1,0 +1,13 @@
+Experiment 8: final optimized linear max-Q Q-learning
+Reward: post-measure fidelity minus pre-measure fidelity.
+TD next state is constructed after the next drift and decay.
+State contains signed and absolute recent-long differences.
+Shot budgets: [10, 25, 50]
+Drift levels: [0.0, 0.0025, 0.005, 0.01]
+Training episodes: 4000
+Training restarts: 5
+Learning rule: linear one-step max-Q TD learning
+Learning rate: 0.002
+Gamma: 0.98
+Epsilon schedule: 0.4 to 0.01
+TD-error clip: 1.0
