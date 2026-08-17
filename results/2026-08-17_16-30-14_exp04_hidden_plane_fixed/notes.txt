@@ -1,0 +1,8 @@
+Experiment 4: fixed baselines on hidden-plane product states
+Each target shares one latent plane: XY, XZ, or YZ.
+The ordinary baselines are not told the plane.
+ORACLE_plane is told the plane and is an upper benchmark.
+Minimum active Bloch-component magnitude: 0.35
+Shot budgets: [10, 25, 50, 100, 250, 500]
+Test targets: 50
+Test seeds: 5
