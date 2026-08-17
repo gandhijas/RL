@@ -1,0 +1,12 @@
+Experiment 5: RL on hidden-plane product states
+Latent plane: XY, XZ, or YZ, shared by both qubits.
+The RL agent is not given the plane label.
+XYZ_split is the complete fixed baseline.
+ORACLE_plane is an informed upper benchmark.
+Training episodes per budget: 5000
+Warm start repeats: 2
+Minimum active component: 0.35
+Epsilon: 0.35 to 0.03
+Learning rate: 0.008
+Gamma: 0.95
+Terminal bonus weight: 0.2
