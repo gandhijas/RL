@@ -1,0 +1,11 @@
+Experiment 5: final stabilized RL training
+State family, actions, reward, estimator, warm start, and linear max-Q formulation are unchanged.
+Training upgrades: independent restarts, held-out validation selection, longer/slower training, and separate RNG streams.
+Training episodes per restart: 12000
+Training restarts: 5
+Validation targets: 30
+Validation seeds: 3
+Epsilon: 0.3 to 0.01
+Learning rate: 0.0035
+Gamma: 0.95
+Terminal bonus weight: 0.2
