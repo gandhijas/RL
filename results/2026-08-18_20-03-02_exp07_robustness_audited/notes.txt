@@ -1,0 +1,12 @@
+Experiment 7: audited symmetric readout-noise robustness
+All methods receive the same readout-flip probability.
+The estimator intentionally uses raw noisy counts, matching the original robustness question.
+RL is trained across randomized tested noise levels.
+Uniform Bloch-sphere states are the primary evaluation set.
+Four axis-aligned states are retained as a separate diagnostic set.
+Shot budgets: [5, 10, 25, 50, 100]
+Noise levels: [0.0, 0.05, 0.1, 0.15]
+Training episodes per restart: 2500
+Training restarts: 3
+Test targets: 80
+Test seeds: 5
