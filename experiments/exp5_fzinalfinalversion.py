@@ -18,12 +18,14 @@ import pandas as pd
 SEED = 123
 SHOT_BUDGETS = [10, 25, 50, 100, 250, 500]
 NUM_TRAIN_EPISODES = int(os.getenv("EXP05_TRAIN_EPISODES", "12000"))
-NUM_TEST_TARGETS = int(os.getenv("EXP05_TEST_TARGETS", "50"))
+NUM_TEST_TARGETS = int(os.getenv("EXP05_TEST_TARGETS", "2000"))
 NUM_VALIDATION_TARGETS = int(os.getenv("EXP05_VALIDATION_TARGETS", "30"))
 NUM_VALIDATION_SEEDS = int(os.getenv("EXP05_VALIDATION_SEEDS", "3"))
 NUM_RESTARTS = int(os.getenv("EXP05_RESTARTS", "5"))
-NUM_TEST_SEEDS = int(os.getenv("EXP05_TEST_SEEDS", "5"))
+NUM_TEST_SEEDS = int(os.getenv("EXP05_TEST_SEEDS", "1"))
 MIN_ACTIVE_COMPONENT = float(os.getenv("EXP05_MIN_ACTIVE_COMPONENT", "0.35"))
+NUM_BOOTSTRAP = int(os.getenv("EXP05_BOOTSTRAP", "10000"))
+BOOTSTRAP_SEED = 20260318
 
 EPSILON_START = 0.30
 EPSILON_END = 0.01
@@ -558,38 +560,118 @@ def main() -> None:
     df = pd.DataFrame(rows)
     df.to_csv(f"{run_dir}/metrics.csv", index=False)
 
-    summary = (
-        df.groupby(["method", "N"])
-        .agg(
-            fidelity_mean=("fidelity", "mean"),
-            fidelity_std=("fidelity", "std"),
-            fidelity_count=("fidelity", "count"),
-            infidelity_mean=("infidelity", "mean"),
-            infidelity_std=("infidelity", "std"),
-        )
-        .reset_index()
-    )
-    summary["fidelity_ci95"] = (
-        1.96 * summary["fidelity_std"] / np.sqrt(summary["fidelity_count"])
-    )
-    summary.to_csv(f"{run_dir}/summary.csv", index=False)
+    # ============================================================
+    # Publication statistics: 95% percentile bootstrap CIs
+    # ============================================================
+    def bootstrap_mean_ci(values, rng, n_boot=NUM_BOOTSTRAP, confidence=0.95):
+        values = np.asarray(values, dtype=float)
+        values = values[np.isfinite(values)]
 
-    plane_summary = (
-        df.groupby(["plane", "method", "N"])
-        .agg(
-            fidelity_mean=("fidelity", "mean"),
-            fidelity_std=("fidelity", "std"),
-            fidelity_count=("fidelity", "count"),
-            infidelity_mean=("infidelity", "mean"),
-        )
-        .reset_index()
-    )
-    plane_summary["fidelity_ci95"] = (
-        1.96 * plane_summary["fidelity_std"]
-        / np.sqrt(plane_summary["fidelity_count"])
-    )
-    plane_summary.to_csv(f"{run_dir}/plane_summary.csv", index=False)
+        if len(values) == 0:
+            return np.nan, np.nan, np.nan
 
+        point = float(np.mean(values))
+        n = len(values)
+        boot_means = np.empty(n_boot, dtype=float)
+
+        for b in range(n_boot):
+            idx = rng.integers(0, n, size=n)
+            boot_means[b] = np.mean(values[idx])
+
+        alpha = 1.0 - confidence
+        lo, hi = np.quantile(
+            boot_means,
+            [alpha / 2.0, 1.0 - alpha / 2.0],
+        )
+        return point, float(lo), float(hi)
+
+
+    fixed_methods = ["Z_only", "ZX_split", "XYZ_split", "ORACLE_plane"]
+    method_order = [
+        "RL_adaptive", "XYZ_split", "ORACLE_plane", "ZX_split", "Z_only"
+    ]
+    method_code = {m: i + 1 for i, m in enumerate(method_order)}
+
+    summary_rows = []
+    for method in method_order:
+        for n_shots in SHOT_BUDGETS:
+            sub = df[(df["method"] == method) & (df["N"] == n_shots)]
+            code = method_code[method]
+
+            f_mean, f_lo, f_hi = bootstrap_mean_ci(
+                sub["fidelity"].to_numpy(),
+                np.random.default_rng(
+                    BOOTSTRAP_SEED + n_shots * 1000 + code * 10 + 1
+                ),
+            )
+            i_mean, i_lo, i_hi = bootstrap_mean_ci(
+                sub["infidelity"].to_numpy(),
+                np.random.default_rng(
+                    BOOTSTRAP_SEED + n_shots * 1000 + code * 10 + 2
+                ),
+            )
+
+            summary_rows.append({
+                "method": method,
+                "N": n_shots,
+                "n_trials": len(sub),
+                "fidelity_mean": f_mean,
+                "fidelity_ci95_low": f_lo,
+                "fidelity_ci95_high": f_hi,
+                "infidelity_mean": i_mean,
+                "infidelity_ci95_low": i_lo,
+                "infidelity_ci95_high": i_hi,
+            })
+
+    summary = pd.DataFrame(summary_rows)
+    summary.to_csv(f"{run_dir}/summary_bootstrap.csv", index=False)
+
+
+    # ============================================================
+    # Plane-specific descriptive summary
+    # ============================================================
+    plane_rows = []
+    for plane in ("XY", "XZ", "YZ"):
+        for method in method_order:
+            for n_shots in SHOT_BUDGETS:
+                sub = df[
+                    (df["plane"] == plane)
+                    & (df["method"] == method)
+                    & (df["N"] == n_shots)
+                ]
+
+                code = method_code[method]
+                plane_code = {"XY": 1, "XZ": 2, "YZ": 3}[plane]
+
+                f_mean, f_lo, f_hi = bootstrap_mean_ci(
+                    sub["fidelity"].to_numpy(),
+                    np.random.default_rng(
+                        BOOTSTRAP_SEED
+                        + 100_000
+                        + plane_code * 10_000
+                        + n_shots * 10
+                        + code
+                    ),
+                )
+
+                plane_rows.append({
+                    "plane": plane,
+                    "method": method,
+                    "N": n_shots,
+                    "n_trials": len(sub),
+                    "fidelity_mean": f_mean,
+                    "fidelity_ci95_low": f_lo,
+                    "fidelity_ci95_high": f_hi,
+                    "infidelity_mean": float(sub["infidelity"].mean()),
+                })
+
+    plane_summary = pd.DataFrame(plane_rows)
+    plane_summary.to_csv(f"{run_dir}/plane_summary_bootstrap.csv", index=False)
+
+
+    # ============================================================
+    # RL allocation summaries
+    # ============================================================
     allocation_cols = [f"shots_{name}" for name in ACTION_NAMES]
     rl_df = df[df["method"] == "RL_adaptive"].copy()
 
@@ -627,6 +709,7 @@ def main() -> None:
         local_rows.append(rec)
 
     local_df = pd.DataFrame(local_rows)
+
     local_plane_summary = (
         local_df.groupby(["plane", "N"])[
             ["q1_X", "q1_Y", "q1_Z", "q2_X", "q2_Y", "q2_Z"]
@@ -641,33 +724,61 @@ def main() -> None:
     # Fraction of measurements spent on the truly inactive basis.
     inactive_basis = {"XY": "Z", "XZ": "Y", "YZ": "X"}
     inactive_records = []
+
     for _, row in local_df.iterrows():
         b = inactive_basis[row["plane"]]
         n = float(row["N"])
         inactive_records.append({
             "target_id": row["target_id"],
-            "seed": row["seed"],
             "N": row["N"],
             "plane": row["plane"],
             "inactive_fraction_q1": float(row[f"q1_{b}"]) / n,
             "inactive_fraction_q2": float(row[f"q2_{b}"]) / n,
+            "inactive_fraction_mean": (
+                float(row[f"q1_{b}"]) + float(row[f"q2_{b}"])
+            ) / (2.0 * n),
         })
+
     inactive_df = pd.DataFrame(inactive_records)
-    inactive_summary = (
-        inactive_df.groupby(["plane", "N"])
-        .agg(
-            inactive_fraction_q1=("inactive_fraction_q1", "mean"),
-            inactive_fraction_q2=("inactive_fraction_q2", "mean"),
-        )
-        .reset_index()
-    )
-    inactive_summary.to_csv(
-        f"{run_dir}/rl_inactive_basis_fraction.csv", index=False
+    inactive_df.to_csv(
+        f"{run_dir}/rl_inactive_basis_trials.csv", index=False
     )
 
-    paired = (
-        df[df["method"].isin(["RL_adaptive", "XYZ_split"])]
-        .pivot_table(
+    inactive_summary_rows = []
+    for plane in ("XY", "XZ", "YZ"):
+        for n_shots in SHOT_BUDGETS:
+            sub = inactive_df[
+                (inactive_df["plane"] == plane)
+                & (inactive_df["N"] == n_shots)
+            ]
+            mean, lo, hi = bootstrap_mean_ci(
+                sub["inactive_fraction_mean"].to_numpy(),
+                np.random.default_rng(
+                    BOOTSTRAP_SEED
+                    + 300_000
+                    + {"XY": 1, "XZ": 2, "YZ": 3}[plane] * 10_000
+                    + n_shots
+                ),
+            )
+            inactive_summary_rows.append({
+                "plane": plane,
+                "N": n_shots,
+                "inactive_fraction_mean": mean,
+                "ci95_low": lo,
+                "ci95_high": hi,
+            })
+
+    inactive_summary = pd.DataFrame(inactive_summary_rows)
+    inactive_summary.to_csv(
+        f"{run_dir}/rl_inactive_basis_fraction_bootstrap.csv", index=False
+    )
+
+
+    # ============================================================
+    # Paired comparisons
+    # ============================================================
+    wide = (
+        df.pivot_table(
             index=["target_id", "seed", "N"],
             columns="method",
             values="fidelity",
@@ -676,38 +787,67 @@ def main() -> None:
         .reset_index()
     )
 
-    paired["delta_fidelity"] = paired["RL_adaptive"] - paired["XYZ_split"]
+    paired_rows = []
+    for n_shots in SHOT_BUDGETS:
+        sub = wide[wide["N"] == n_shots]
 
-    paired_summary = (
-        paired.groupby("N")
-        .agg(
-            delta_mean=("delta_fidelity", "mean"),
-            delta_std=("delta_fidelity", "std"),
-            count=("delta_fidelity", "count"),
-            rl_win_rate=("delta_fidelity", lambda x: float(np.mean(x > 0.0))),
-        )
-        .reset_index()
-    )
-    paired_summary["delta_ci95"] = (
-        1.96 * paired_summary["delta_std"] / np.sqrt(paired_summary["count"])
-    )
+        for comparison_name, lhs, rhs in [
+            ("RL_minus_XYZ", "RL_adaptive", "XYZ_split"),
+            ("ORACLE_minus_XYZ", "ORACLE_plane", "XYZ_split"),
+            ("ORACLE_minus_RL", "ORACLE_plane", "RL_adaptive"),
+        ]:
+            diff = (sub[lhs] - sub[rhs]).to_numpy()
+
+            mean, lo, hi = bootstrap_mean_ci(
+                diff,
+                np.random.default_rng(
+                    BOOTSTRAP_SEED
+                    + 500_000
+                    + n_shots * 100
+                    + {
+                        "RL_minus_XYZ": 1,
+                        "ORACLE_minus_XYZ": 2,
+                        "ORACLE_minus_RL": 3,
+                    }[comparison_name]
+                ),
+            )
+
+            paired_rows.append({
+                "comparison": comparison_name,
+                "N": n_shots,
+                "n_pairs": len(diff),
+                "mean_difference": mean,
+                "ci95_low": lo,
+                "ci95_high": hi,
+                "lhs_win_rate": float(np.mean(diff > 0.0)),
+                "tie_rate": float(np.mean(np.isclose(diff, 0.0, atol=1e-12))),
+                "lhs_loss_rate": float(np.mean(diff < 0.0)),
+            })
+
+    paired_summary = pd.DataFrame(paired_rows)
     paired_summary.to_csv(
-        f"{run_dir}/rl_vs_xyz_paired_summary.csv", index=False
+        f"{run_dir}/paired_comparisons_bootstrap.csv", index=False
     )
 
-    # How much of the oracle-vs-XYZ gap does RL recover?
+
+    # ============================================================
+    # Oracle-gap recovery
+    # ============================================================
     means = summary.pivot(index="N", columns="method", values="fidelity_mean")
     gap_rows = []
+
     for n_shots in means.index:
         f_rl = float(means.loc[n_shots, "RL_adaptive"])
         f_xyz = float(means.loc[n_shots, "XYZ_split"])
         f_oracle = float(means.loc[n_shots, "ORACLE_plane"])
+
         oracle_gap = f_oracle - f_xyz
         recovered = (
             (f_rl - f_xyz) / oracle_gap
             if abs(oracle_gap) > 1e-12
             else np.nan
         )
+
         gap_rows.append({
             "N": int(n_shots),
             "F_RL": f_rl,
@@ -717,113 +857,188 @@ def main() -> None:
             "rl_gain_over_xyz": f_rl - f_xyz,
             "oracle_gap_recovered_fraction": recovered,
         })
+
     pd.DataFrame(gap_rows).to_csv(
         f"{run_dir}/oracle_gap_recovery.csv", index=False
     )
 
-    method_order = [
-        "RL_adaptive", "XYZ_split", "ORACLE_plane", "ZX_split", "Z_only"
-    ]
 
-    def plot_metric(mean_col, std_col, ylabel, title, filename, logy=False):
-        plt.figure()
+    # ============================================================
+    # Publication plots
+    # ============================================================
+    def plot_metric_ci(
+        mean_col,
+        low_col,
+        high_col,
+        ylabel,
+        title,
+        filename,
+        logy=False,
+    ):
+        plt.figure(figsize=(6.4, 4.4))
+
         for method in method_order:
             sub = summary[summary["method"] == method].sort_values("N")
             x = sub["N"].to_numpy()
             y = sub[mean_col].to_numpy()
-            s = sub[std_col].to_numpy()
-            lower = np.maximum(y - s, 1e-12) if logy else y - s
+            lo = sub[low_col].to_numpy()
+            hi = sub[high_col].to_numpy()
+
             plt.plot(x, y, marker="o", label=method)
-            plt.fill_between(x, lower, y + s, alpha=0.2)
+            plt.fill_between(x, lo, hi, alpha=0.18)
 
         plt.xscale("log")
         if logy:
             plt.yscale("log")
-        plt.xlabel("Shots (N)")
+
+        plt.xlabel("Measurement budget (N)")
         plt.ylabel(ylabel)
-        plt.title(title)
+        plt.title("Exp. 5: Hidden-plane two-qubit tomography")
         plt.legend()
         plt.tight_layout()
-        plt.savefig(f"{run_dir}/{filename}", dpi=200)
+        plt.savefig(f"{run_dir}/{filename}", dpi=300, bbox_inches="tight")
         plt.close()
 
-    plot_metric(
-        "fidelity_mean", "fidelity_std", "Mean Fidelity",
-        "Exp05: RL on Hidden-Plane 2-Qubit Product States",
-        "fidelity_vs_shots.png",
+
+    plot_metric_ci(
+        "fidelity_mean",
+        "fidelity_ci95_low",
+        "fidelity_ci95_high",
+        "Mean fidelity",
+        "Exp. 5: Hidden-plane two-qubit tomography",
+        "exp5_fidelity_vs_shots_bootstrap95.png",
     )
 
-    plot_metric(
-        "infidelity_mean", "infidelity_std", "Mean Infidelity",
-        "Exp05: RL on Hidden-Plane 2-Qubit Product States",
-        "infidelity_vs_shots.png", logy=True,
+    plot_metric_ci(
+        "infidelity_mean",
+        "infidelity_ci95_low",
+        "infidelity_ci95_high",
+        "Mean infidelity",
+        "Exp. 5: Hidden-plane two-qubit tomography",
+        "exp5_infidelity_vs_shots_bootstrap95.png",
+        logy=True,
     )
 
-    plt.figure()
-    x = paired_summary["N"].to_numpy()
-    y = paired_summary["delta_mean"].to_numpy()
-    ci = paired_summary["delta_ci95"].to_numpy()
-    plt.axhline(0.0, linestyle="--", linewidth=1)
-    plt.plot(x, y, marker="o")
-    plt.fill_between(x, y - ci, y + ci, alpha=0.2)
+
+    # Paired RL - XYZ plot
+    rl_xyz = paired_summary[
+        paired_summary["comparison"] == "RL_minus_XYZ"
+    ].sort_values("N")
+
+    plt.figure(figsize=(6.4, 4.4))
+    x = rl_xyz["N"].to_numpy()
+    y = rl_xyz["mean_difference"].to_numpy()
+    lo = rl_xyz["ci95_low"].to_numpy()
+    hi = rl_xyz["ci95_high"].to_numpy()
+    yerr = np.vstack([y - lo, hi - y])
+
+    plt.errorbar(x, y, yerr=yerr, marker="o", capsize=4)
+    plt.axhline(0.0, linestyle="--", linewidth=1.0)
     plt.xscale("log")
-    plt.xlabel("Shots (N)")
-    plt.ylabel("Paired Fidelity Difference (RL - XYZ)")
-    plt.title("Exp05: Paired RL vs XYZ")
+    plt.xlabel("Measurement budget (N)")
+    plt.ylabel("Mean fidelity difference (RL - XYZ)")
+    plt.title("Exp. 5: Paired RL vs. XYZ")
     plt.tight_layout()
-    plt.savefig(f"{run_dir}/rl_vs_xyz_paired_delta.png", dpi=200)
+    plt.savefig(
+        f"{run_dir}/exp5_paired_RL_minus_XYZ_bootstrap95.png",
+        dpi=300,
+        bbox_inches="tight",
+    )
     plt.close()
 
-    plt.figure()
-    for name in ACTION_NAMES:
-        plt.plot(
-            allocation_summary["N"],
-            allocation_summary[f"shots_{name}"],
-            marker="o",
-            label=name,
-        )
+
+    # Inactive-basis usage plot: directly measures whether RL learns the plane.
+    plt.figure(figsize=(6.4, 4.4))
+    for plane in ("XY", "XZ", "YZ"):
+        sub = inactive_summary[
+            inactive_summary["plane"] == plane
+        ].sort_values("N")
+        x = sub["N"].to_numpy()
+        y = sub["inactive_fraction_mean"].to_numpy()
+        lo = sub["ci95_low"].to_numpy()
+        hi = sub["ci95_high"].to_numpy()
+
+        plt.plot(x, y, marker="o", label=plane)
+        plt.fill_between(x, lo, hi, alpha=0.15)
+
+    plt.axhline(
+        1.0 / 3.0,
+        linestyle="--",
+        linewidth=1.0,
+        label="Balanced XYZ reference",
+    )
     plt.xscale("log")
-    plt.xlabel("Shots (N)")
-    plt.ylabel("Mean RL measurements")
-    plt.title("Exp05: RL joint-action allocation")
-    plt.legend(ncol=3)
+    plt.ylim(0.0, 0.5)
+    plt.xlabel("Measurement budget (N)")
+    plt.ylabel("Fraction on truly inactive basis")
+    plt.title("Exp. 5: RL identification of hidden plane")
+    plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{run_dir}/rl_allocation_vs_shots.png", dpi=200)
+    plt.savefig(
+        f"{run_dir}/exp5_inactive_basis_fraction_bootstrap95.png",
+        dpi=300,
+        bbox_inches="tight",
+    )
     plt.close()
+
+
+    # ============================================================
+    # Save trained weights and notes
+    # ============================================================
+    for n_shots, weights in trained_weights.items():
+        for action in ACTIONS:
+            name = action[0] + action[1]
+            np.save(
+                f"{run_dir}/weights_{name}_N{n_shots}.npy",
+                weights[action],
+            )
 
     with open(f"{run_dir}/notes.txt", "w", encoding="utf-8") as f:
-        f.write("Experiment 5: final stabilized RL training\n")
+        f.write("Experiment 5: hidden-plane two-qubit RL tomography\\n")
         f.write(
-            "State family, actions, reward, estimator, warm start, and "
-            "linear max-Q formulation are unchanged.\n"
+            "State family, actions, reward, estimator, warm start, training "
+            "restarts, and validation-based policy selection are unchanged "
+            "from the most recent stabilized Exp. 5 implementation.\\n"
+        )
+        f.write(f"Shot budgets: {SHOT_BUDGETS}\\n")
+        f.write(f"Training episodes per restart: {NUM_TRAIN_EPISODES}\\n")
+        f.write(f"Training restarts: {NUM_RESTARTS}\\n")
+        f.write(f"Validation targets: {NUM_VALIDATION_TARGETS}\\n")
+        f.write(f"Validation seeds: {NUM_VALIDATION_SEEDS}\\n")
+        f.write(f"Independent evaluation targets per budget: {NUM_TEST_TARGETS}\\n")
+        f.write(f"Evaluation seeds per target: {NUM_TEST_SEEDS}\\n")
+        f.write(f"Bootstrap resamples: {NUM_BOOTSTRAP}\\n")
+        f.write("CI: 95% percentile bootstrap confidence interval of the mean\\n")
+        f.write(
+            "Paired comparisons are computed on matched target-state trials "
+            "for RL vs XYZ, oracle vs XYZ, and oracle vs RL.\\n"
         )
         f.write(
-            "Training upgrades: independent restarts, held-out validation "
-            "selection, longer/slower training, and separate RNG streams.\n"
+            "Bootstrap uncertainty is conditional on the validation-selected "
+            "trained policy and does not include between-training-run "
+            "selection variability.\\n"
         )
-        f.write(f"Training episodes per restart: {NUM_TRAIN_EPISODES}\n")
-        f.write(f"Training restarts: {NUM_RESTARTS}\n")
-        f.write(f"Validation targets: {NUM_VALIDATION_TARGETS}\n")
-        f.write(f"Validation seeds: {NUM_VALIDATION_SEEDS}\n")
-        f.write(f"Epsilon: {EPSILON_START} to {EPSILON_END}\n")
-        f.write(f"Learning rate: {LEARNING_RATE}\n")
-        f.write(f"Gamma: {GAMMA}\n")
-        f.write(f"Terminal bonus weight: {TERMINAL_BONUS_WEIGHT}\n")
+        f.write(f"Minimum active Bloch component: {MIN_ACTIVE_COMPONENT}\\n")
+        f.write(f"Warm-start repeats: {WARM_START_REPEATS}\\n")
+        f.write(f"Epsilon: {EPSILON_START} to {EPSILON_END}\\n")
+        f.write(f"Learning rate: {LEARNING_RATE}\\n")
+        f.write(f"Gamma: {GAMMA}\\n")
+        f.write(f"Terminal bonus weight: {TERMINAL_BONUS_WEIGHT}\\n")
+        f.write(f"Bootstrap seed: {BOOTSTRAP_SEED}\\n")
 
     print("Saved results to:", run_dir)
     print("Key outputs:")
+    print("- metrics.csv")
     print("- training_restart_validation.csv")
-    print("- summary.csv")
-    print("- plane_summary.csv")
-    print("- rl_allocation_summary.csv")
-    print("- rl_plane_allocation_summary.csv")
-    print("- rl_plane_local_basis_summary.csv")
-    print("- rl_inactive_basis_fraction.csv")
+    print("- summary_bootstrap.csv")
+    print("- paired_comparisons_bootstrap.csv")
     print("- oracle_gap_recovery.csv")
-    print("- rl_vs_xyz_paired_summary.csv")
-    print("- fidelity_vs_shots.png")
-    print("- infidelity_vs_shots.png")
-    print("- rl_vs_xyz_paired_delta.png")
+    print("- plane_summary_bootstrap.csv")
+    print("- rl_inactive_basis_fraction_bootstrap.csv")
+    print("- exp5_fidelity_vs_shots_bootstrap95.png")
+    print("- exp5_paired_RL_minus_XYZ_bootstrap95.png")
+    print("- exp5_inactive_basis_fraction_bootstrap95.png")
+    print("- notes.txt")
 
 
 if __name__ == "__main__":
