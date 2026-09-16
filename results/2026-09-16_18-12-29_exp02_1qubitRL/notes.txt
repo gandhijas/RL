@@ -1,0 +1,17 @@
+Experiment: Exp02 - 1-qubit adaptive measurement with RL
+Methods: Z_only, ZX_split, RL_adaptive
+Shot budgets: [10, 25, 50, 100, 250, 500]
+Training episodes per budget: 3000
+Independent evaluation targets per budget: 2000
+Bootstrap resamples: 10000
+CI: 95% percentile bootstrap confidence interval of the mean
+Paired analysis: RL minus ZX on matched target-state trials, with a 95% percentile bootstrap CI of the mean paired difference.
+Bootstrap uncertainty is conditional on the single trained policy for each budget and does not include between-training-run variability.
+Training master seed: 123
+Evaluation master seed: 456789
+Bootstrap seed: 20260316
+Epsilon start/end/test: 0.3, 0.05, 0.0
+Learning rate: 0.01
+Gamma: 0.95
+Imbalance penalty: 0.02
+Number of state features: 11
