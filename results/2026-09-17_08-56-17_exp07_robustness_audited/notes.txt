@@ -1,0 +1,16 @@
+Experiment 7: audited symmetric readout-noise robustness
+All methods receive the same readout-flip probability.
+The estimator intentionally uses raw noisy counts; no readout-error correction is applied.
+RL is trained across randomized tested noise levels, so the same validation-selected policy for each shot budget is evaluated at all four noise levels.
+Uniform Bloch-sphere product states are the primary evaluation set.
+Four axis-aligned states are retained as a separate diagnostic set.
+Shot budgets: [5, 10, 25, 50, 100]
+Noise levels: [0.0, 0.05, 0.1, 0.15]
+Training episodes per restart: 2500
+Training restarts: 3
+Independent uniform test targets: 2000
+Test seeds per target: 1
+Bootstrap resamples: 10000
+Confidence intervals are 95% percentile bootstrap intervals for the mean across independent target-state trials.
+Paired RL-minus-XYZ intervals use matched target-state trials.
+Bootstrap uncertainty is conditional on the selected trained policy and does not include between-training-run selection variability.
