@@ -8,17 +8,15 @@ import matplotlib.pyplot as plt
 
 
 # ============================================================
-# Experiment 8: Corrected two-qubit adaptive tracking under drift
+# Experiment 8: Final frozen two-qubit adaptive tracking under drift
 #
-# Key corrections:
-# 1. Reward is the fidelity improvement caused by the current
-#    measurement, not total accumulated fidelity.
-# 2. TD updates use the actual next decision state, after the
-#    next drift and count-decay step.
-# 3. The RL state contains both signed and absolute disagreement
-#    between recent and long-memory estimates.
-# 4. RL allocation summaries and a zero-drift sanity check are
-#    generated automatically.
+# Scientific/training setup is preserved from the corrected version.
+# Final-publication changes:
+# 1. 2,000 independent test trajectories per condition.
+# 2. One measurement realization per trajectory.
+# 3. 10,000-resample 95% percentile bootstrap confidence intervals.
+# 4. Paired bootstrap analysis for RL - XYZ tracking and final fidelity.
+# 5. Win/tie/loss rates retained as diagnostics.
 # ============================================================
 
 
@@ -26,7 +24,7 @@ import matplotlib.pyplot as plt
 # Run directory
 # ========================
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-run_dir = f"results/{timestamp}_exp08_drift_final_frozen"
+run_dir = f"results/{timestamp}_exp08_drift_final_bootstrap95"
 os.makedirs(run_dir, exist_ok=True)
 
 
@@ -42,8 +40,12 @@ NUM_RESTARTS = 5
 NUM_VALIDATION_TARGETS = 20
 NUM_VALIDATION_SEEDS = 2
 
-NUM_TEST_TARGETS = 40
-NUM_TEST_SEEDS = 4
+# Final publication evaluation.
+NUM_TEST_TARGETS = 2000
+NUM_TEST_SEEDS = 1
+
+NUM_BOOTSTRAP = 10000
+BOOTSTRAP_SEED = 20260320
 
 EPSILON_START = 0.40
 EPSILON_END = 0.01
@@ -85,13 +87,6 @@ def advance_angles(
     omega_theta: float,
     omega_phi: float,
 ) -> Tuple[float, float]:
-    """
-    Advance spherical angles while handling pole crossings correctly.
-
-    Crossing theta=0 or theta=pi requires reflecting theta back into
-    [0, pi] and shifting phi by pi to represent the same continuous
-    physical Bloch-sphere trajectory.
-    """
     theta_new = float(theta + omega_theta)
     phi_new = float(phi + omega_phi)
 
@@ -253,14 +248,6 @@ ACTIONS = [
 ACTION_NAMES = [a + b for a, b in ACTIONS]
 ACTION_INDEX = {action: index for index, action in enumerate(ACTIONS)}
 
-# 6 long estimates
-# 6 recent estimates
-# 6 signed differences
-# 6 absolute differences
-# 6 uncertainties
-# 6 recent local fractions
-# 9 joint-action fractions
-# progress + bias
 STATE_DIM = 47
 
 
@@ -342,11 +329,8 @@ def build_state(
 
 
 def initialize_weights() -> Dict[Tuple[str, str], np.ndarray]:
-    # absolute-difference feature positions
     abs_q1 = {"X": 18, "Y": 19, "Z": 20}
     abs_q2 = {"X": 21, "Y": 22, "Z": 23}
-
-    # uncertainty feature positions
     unc_q1 = {"X": 24, "Y": 25, "Z": 26}
     unc_q2 = {"X": 27, "Y": 28, "Z": 29}
 
@@ -355,12 +339,10 @@ def initialize_weights() -> Dict[Tuple[str, str], np.ndarray]:
     for action in ACTIONS:
         b1, b2 = action
         vector = np.zeros(STATE_DIM, dtype=float)
-
         vector[abs_q1[b1]] = 0.05
         vector[abs_q2[b2]] = 0.05
         vector[unc_q1[b1]] = 0.05
         vector[unc_q2[b2]] = 0.05
-
         weights[action] = vector
 
     return weights
@@ -512,8 +494,6 @@ def run_episode(
             total_shots,
         )
 
-        # Complete the previous TD transition using the actual next
-        # decision state after drift and decay.
         if (
             strategy == "RL_adaptive"
             and update_weights
@@ -551,9 +531,6 @@ def run_episode(
             if weights is None:
                 raise ValueError("RL strategy requires weights")
 
-            # RL receives a short balanced initialization so that its
-            # information state is not completely empty. Fixed baselines
-            # follow their own schedules from the very first shot.
             if t < len(warm_actions):
                 action = warm_actions[t]
             else:
@@ -601,7 +578,6 @@ def run_episode(
             pending_action = action
             pending_reward = reward
 
-    # Terminal update for the final pending action.
     if (
         strategy == "RL_adaptive"
         and update_weights
@@ -610,9 +586,6 @@ def run_episode(
         q_previous = float(
             np.dot(weights[pending_action], pending_state)
         )
-
-        # No additional terminal bonus: the learner is optimized for
-        # ongoing tracking improvements throughout the trajectory.
         terminal_reward = pending_reward
         td_error = float(
             np.clip(
@@ -851,34 +824,117 @@ for target_id in range(NUM_TEST_TARGETS):
                         }
                     )
 
+    if (target_id + 1) % 250 == 0:
+        print(
+            f"Final evaluation: {target_id + 1}/{NUM_TEST_TARGETS} "
+            "independent trajectories complete"
+        )
+
 
 df = pd.DataFrame(rows)
 df.to_csv(f"{run_dir}/drift_metrics.csv", index=False)
 
-summary = (
-    df.groupby(["method", "N", "drift_level"])
-    .agg(
-        final_fidelity_mean=("final_fidelity", "mean"),
-        final_fidelity_std=("final_fidelity", "std"),
-        final_fidelity_count=("final_fidelity", "count"),
-        tracking_fidelity_mean=("tracking_fidelity", "mean"),
-        tracking_fidelity_std=("tracking_fidelity", "std"),
-        tracking_fidelity_count=("tracking_fidelity", "count"),
-    )
-    .reset_index()
-)
 
-summary["final_fidelity_ci95"] = (
-    1.96
-    * summary["final_fidelity_std"]
-    / np.sqrt(summary["final_fidelity_count"])
+# ========================
+# Bootstrap utility
+# ========================
+def bootstrap_mean_ci(
+    values,
+    rng: np.random.Generator,
+    n_boot: int = NUM_BOOTSTRAP,
+    confidence: float = 0.95,
+):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+
+    if len(values) == 0:
+        return np.nan, np.nan, np.nan
+
+    point = float(np.mean(values))
+    n = len(values)
+    boot_means = np.empty(n_boot, dtype=float)
+
+    for b in range(n_boot):
+        indices = rng.integers(0, n, size=n)
+        boot_means[b] = np.mean(values[indices])
+
+    alpha = 1.0 - confidence
+    low, high = np.quantile(
+        boot_means,
+        [alpha / 2.0, 1.0 - alpha / 2.0],
+    )
+
+    return point, float(low), float(high)
+
+
+# ========================
+# Method-level bootstrap summaries
+# ========================
+method_code = {method: i + 1 for i, method in enumerate(METHODS)}
+summary_rows = []
+
+for method in METHODS:
+    for total_shots in SHOT_BUDGETS:
+        for drift_index, drift_level in enumerate(DRIFT_LEVELS):
+            sub = df[
+                (df["method"] == method)
+                & (df["N"] == total_shots)
+                & np.isclose(df["drift_level"], drift_level)
+            ]
+
+            code = method_code[method]
+            seed_base = (
+                BOOTSTRAP_SEED
+                + total_shots * 10000
+                + drift_index * 100
+                + code * 10
+            )
+
+            final_mean, final_lo, final_hi = bootstrap_mean_ci(
+                sub["final_fidelity"].to_numpy(),
+                np.random.default_rng(seed_base + 1),
+            )
+            tracking_mean, tracking_lo, tracking_hi = bootstrap_mean_ci(
+                sub["tracking_fidelity"].to_numpy(),
+                np.random.default_rng(seed_base + 2),
+            )
+            final_inf_mean, final_inf_lo, final_inf_hi = bootstrap_mean_ci(
+                sub["final_infidelity"].to_numpy(),
+                np.random.default_rng(seed_base + 3),
+            )
+            tracking_inf_mean, tracking_inf_lo, tracking_inf_hi = (
+                bootstrap_mean_ci(
+                    sub["tracking_infidelity"].to_numpy(),
+                    np.random.default_rng(seed_base + 4),
+                )
+            )
+
+            summary_rows.append(
+                {
+                    "method": method,
+                    "N": total_shots,
+                    "drift_level": drift_level,
+                    "n_trials": len(sub),
+                    "final_fidelity_mean": final_mean,
+                    "final_fidelity_ci95_low": final_lo,
+                    "final_fidelity_ci95_high": final_hi,
+                    "tracking_fidelity_mean": tracking_mean,
+                    "tracking_fidelity_ci95_low": tracking_lo,
+                    "tracking_fidelity_ci95_high": tracking_hi,
+                    "final_infidelity_mean": final_inf_mean,
+                    "final_infidelity_ci95_low": final_inf_lo,
+                    "final_infidelity_ci95_high": final_inf_hi,
+                    "tracking_infidelity_mean": tracking_inf_mean,
+                    "tracking_infidelity_ci95_low": tracking_inf_lo,
+                    "tracking_infidelity_ci95_high": tracking_inf_hi,
+                }
+            )
+
+summary = pd.DataFrame(summary_rows)
+summary.to_csv(
+    f"{run_dir}/drift_summary_bootstrap.csv",
+    index=False,
 )
-summary["tracking_fidelity_ci95"] = (
-    1.96
-    * summary["tracking_fidelity_std"]
-    / np.sqrt(summary["tracking_fidelity_count"])
-)
-summary.to_csv(f"{run_dir}/drift_summary.csv", index=False)
 
 
 # ========================
@@ -898,7 +954,7 @@ allocation_summary.to_csv(
 
 
 # ========================
-# Paired RL-versus-XYZ
+# Paired RL-versus-XYZ bootstrap analysis
 # ========================
 paired = (
     df[df["method"].isin(["RL_adaptive", "XYZ_interleaved"])]
@@ -924,84 +980,131 @@ paired["delta_tracking_fidelity"] = (
     - paired["tracking_fidelity_XYZ_interleaved"]
 )
 
-paired_summary = (
-    paired.groupby(["N", "drift_level"])
-    .agg(
-        delta_final_mean=("delta_final_fidelity", "mean"),
-        delta_final_std=("delta_final_fidelity", "std"),
-        delta_tracking_mean=("delta_tracking_fidelity", "mean"),
-        delta_tracking_std=("delta_tracking_fidelity", "std"),
-        count=("delta_tracking_fidelity", "count"),
-        rl_tracking_win_rate=(
-            "delta_tracking_fidelity",
-            lambda values: float(np.mean(values > 0.0)),
-        ),
-        rl_final_win_rate=(
-            "delta_final_fidelity",
-            lambda values: float(np.mean(values > 0.0)),
-        ),
-    )
-    .reset_index()
+paired.to_csv(
+    f"{run_dir}/rl_vs_xyz_paired_trials.csv",
+    index=False,
 )
 
-paired_summary["delta_final_ci95"] = (
-    1.96
-    * paired_summary["delta_final_std"]
-    / np.sqrt(paired_summary["count"])
-)
-paired_summary["delta_tracking_ci95"] = (
-    1.96
-    * paired_summary["delta_tracking_std"]
-    / np.sqrt(paired_summary["count"])
-)
+paired_summary_rows = []
+
+for total_shots in SHOT_BUDGETS:
+    for drift_index, drift_level in enumerate(DRIFT_LEVELS):
+        sub = paired[
+            (paired["N"] == total_shots)
+            & np.isclose(paired["drift_level"], drift_level)
+        ]
+
+        final_diff = sub["delta_final_fidelity"].to_numpy()
+        tracking_diff = sub["delta_tracking_fidelity"].to_numpy()
+
+        final_mean, final_lo, final_hi = bootstrap_mean_ci(
+            final_diff,
+            np.random.default_rng(
+                BOOTSTRAP_SEED
+                + 500_000
+                + total_shots * 100
+                + drift_index * 10
+                + 1
+            ),
+        )
+        tracking_mean, tracking_lo, tracking_hi = bootstrap_mean_ci(
+            tracking_diff,
+            np.random.default_rng(
+                BOOTSTRAP_SEED
+                + 500_000
+                + total_shots * 100
+                + drift_index * 10
+                + 2
+            ),
+        )
+
+        paired_summary_rows.append(
+            {
+                "N": total_shots,
+                "drift_level": drift_level,
+                "n_pairs": len(sub),
+                "delta_final_mean": final_mean,
+                "delta_final_ci95_low": final_lo,
+                "delta_final_ci95_high": final_hi,
+                "delta_tracking_mean": tracking_mean,
+                "delta_tracking_ci95_low": tracking_lo,
+                "delta_tracking_ci95_high": tracking_hi,
+                "rl_tracking_win_rate": float(
+                    np.mean(tracking_diff > 0.0)
+                ),
+                "rl_tracking_tie_rate": float(
+                    np.mean(np.isclose(tracking_diff, 0.0, atol=1e-12))
+                ),
+                "rl_tracking_loss_rate": float(
+                    np.mean(tracking_diff < 0.0)
+                ),
+                "rl_final_win_rate": float(
+                    np.mean(final_diff > 0.0)
+                ),
+                "rl_final_tie_rate": float(
+                    np.mean(np.isclose(final_diff, 0.0, atol=1e-12))
+                ),
+                "rl_final_loss_rate": float(
+                    np.mean(final_diff < 0.0)
+                ),
+            }
+        )
+
+paired_summary = pd.DataFrame(paired_summary_rows)
 paired_summary.to_csv(
-    f"{run_dir}/rl_vs_xyz_paired_summary.csv",
+    f"{run_dir}/rl_vs_xyz_paired_bootstrap.csv",
     index=False,
 )
 
 
 # ========================
-# Headline plots
+# Headline publication plots
 # ========================
 headline = summary[summary["N"] == HEADLINE_BUDGET]
 
 for metric, ylabel, filename in [
     (
         "tracking_fidelity",
-        "Mean Tracking Fidelity",
-        f"tracking_fidelity_vs_drift_N{HEADLINE_BUDGET}.png",
+        "Mean tracking fidelity",
+        f"tracking_fidelity_vs_drift_N{HEADLINE_BUDGET}_bootstrap95.png",
     ),
     (
         "final_fidelity",
-        "Final-State Fidelity",
-        f"final_fidelity_vs_drift_N{HEADLINE_BUDGET}.png",
+        "Final-state fidelity",
+        f"final_fidelity_vs_drift_N{HEADLINE_BUDGET}_bootstrap95.png",
     ),
 ]:
-    plt.figure(figsize=(9, 6))
+    plt.figure(figsize=(6.4, 4.4))
 
-    for method in headline["method"].unique():
-        sub = headline[headline["method"] == method].sort_values(
-            "drift_level"
-        )
+    for method in METHODS:
+        sub = headline[
+            headline["method"] == method
+        ].sort_values("drift_level")
+
         x = sub["drift_level"].to_numpy()
         y = sub[f"{metric}_mean"].to_numpy()
-        ci = sub[f"{metric}_ci95"].to_numpy()
+        lo = sub[f"{metric}_ci95_low"].to_numpy()
+        hi = sub[f"{metric}_ci95_high"].to_numpy()
 
         plt.plot(x, y, marker="o", label=method)
         plt.fill_between(
             x,
-            np.clip(y - ci, 0.0, 1.0),
-            np.clip(y + ci, 0.0, 1.0),
-            alpha=0.2,
+            np.clip(lo, 0.0, 1.0),
+            np.clip(hi, 0.0, 1.0),
+            alpha=0.18,
         )
 
     plt.xlabel("Per-step drift magnitude")
     plt.ylabel(ylabel)
-    plt.title(f"Exp08 Corrected: {ylabel} at N={HEADLINE_BUDGET}")
+    plt.title(f"Exp. 8: {ylabel} at N={HEADLINE_BUDGET}")
     plt.ylim(0.0, 1.0)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{run_dir}/{filename}", dpi=200)
+    plt.savefig(
+        f"{run_dir}/{filename}",
+        dpi=300,
+        bbox_inches="tight",
+    )
     plt.close()
 
 
@@ -1009,43 +1112,74 @@ delta_headline = paired_summary[
     paired_summary["N"] == HEADLINE_BUDGET
 ].sort_values("drift_level")
 
-plt.figure(figsize=(9, 6))
+
+# Paired tracking difference
+plt.figure(figsize=(6.4, 4.4))
 x = delta_headline["drift_level"].to_numpy()
 y = delta_headline["delta_tracking_mean"].to_numpy()
-ci = delta_headline["delta_tracking_ci95"].to_numpy()
-plt.axhline(0.0, linestyle="--", linewidth=1)
-plt.plot(x, y, marker="o")
-plt.fill_between(x, y - ci, y + ci, alpha=0.2)
+lo = delta_headline["delta_tracking_ci95_low"].to_numpy()
+hi = delta_headline["delta_tracking_ci95_high"].to_numpy()
+yerr = np.vstack([y - lo, hi - y])
+
+plt.errorbar(x, y, yerr=yerr, marker="o", capsize=4)
+plt.axhline(0.0, linestyle="--", linewidth=1.0)
 plt.xlabel("Per-step drift magnitude")
 plt.ylabel(r"$\Delta F_{\rm track}=F_{\rm RL}-F_{\rm XYZ}$")
 plt.title(
-    f"Exp08 Corrected: Paired Tracking Advantage at N={HEADLINE_BUDGET}"
+    f"Exp. 8: Paired tracking difference at N={HEADLINE_BUDGET}"
 )
 plt.tight_layout()
 plt.savefig(
-    f"{run_dir}/rl_vs_xyz_tracking_delta_N{HEADLINE_BUDGET}.png",
-    dpi=200,
+    f"{run_dir}/rl_vs_xyz_tracking_delta_N{HEADLINE_BUDGET}_bootstrap95.png",
+    dpi=300,
+    bbox_inches="tight",
 )
 plt.close()
 
 
-plt.figure(figsize=(9, 6))
+# Paired final-state difference
+plt.figure(figsize=(6.4, 4.4))
+x = delta_headline["drift_level"].to_numpy()
+y = delta_headline["delta_final_mean"].to_numpy()
+lo = delta_headline["delta_final_ci95_low"].to_numpy()
+hi = delta_headline["delta_final_ci95_high"].to_numpy()
+yerr = np.vstack([y - lo, hi - y])
+
+plt.errorbar(x, y, yerr=yerr, marker="o", capsize=4)
+plt.axhline(0.0, linestyle="--", linewidth=1.0)
+plt.xlabel("Per-step drift magnitude")
+plt.ylabel(r"$\Delta F_{\rm final}=F_{\rm RL}-F_{\rm XYZ}$")
+plt.title(
+    f"Exp. 8: Paired final-state difference at N={HEADLINE_BUDGET}"
+)
+plt.tight_layout()
+plt.savefig(
+    f"{run_dir}/rl_vs_xyz_final_delta_N{HEADLINE_BUDGET}_bootstrap95.png",
+    dpi=300,
+    bbox_inches="tight",
+)
+plt.close()
+
+
+# Tracking win-rate diagnostic
+plt.figure(figsize=(6.4, 4.4))
 plt.plot(
     delta_headline["drift_level"],
     100.0 * delta_headline["rl_tracking_win_rate"],
     marker="o",
 )
-plt.axhline(50.0, linestyle="--", linewidth=1)
+plt.axhline(50.0, linestyle="--", linewidth=1.0)
 plt.ylim(0.0, 100.0)
 plt.xlabel("Per-step drift magnitude")
 plt.ylabel("RL tracking win rate (%)")
 plt.title(
-    f"Exp08 Corrected: RL Tracking Win Rate at N={HEADLINE_BUDGET}"
+    f"Exp. 8: RL tracking win rate at N={HEADLINE_BUDGET}"
 )
 plt.tight_layout()
 plt.savefig(
     f"{run_dir}/rl_vs_xyz_tracking_win_rate_N{HEADLINE_BUDGET}.png",
-    dpi=200,
+    dpi=300,
+    bbox_inches="tight",
 )
 plt.close()
 
@@ -1059,15 +1193,20 @@ sanity = paired_summary[
 ]
 
 if not sanity.empty:
-    gap = float(sanity.iloc[0]["delta_tracking_mean"])
+    row = sanity.iloc[0]
+    gap = float(row["delta_tracking_mean"])
+    lo = float(row["delta_tracking_ci95_low"])
+    hi = float(row["delta_tracking_ci95_high"])
+
     print(
         f"Zero-drift paired tracking gap at N={HEADLINE_BUDGET}: "
-        f"{gap:+.6f}"
+        f"{gap:+.6f}, 95% bootstrap CI [{lo:+.6f}, {hi:+.6f}]"
     )
+
     if gap < -0.05:
         print(
             "WARNING: zero-drift RL remains far below XYZ. "
-            "Do not use higher-drift results yet."
+            "Do not interpret higher-drift results until this is audited."
         )
     else:
         print(
@@ -1076,10 +1215,28 @@ if not sanity.empty:
         )
 
 
+# ========================
+# Save weights and notes
+# ========================
+for total_shots, weights in trained_weights.items():
+    for action in ACTIONS:
+        name = action[0] + action[1]
+        np.save(
+            f"{run_dir}/weights_{name}_N{total_shots}.npy",
+            weights[action],
+        )
+
 with open(f"{run_dir}/notes.txt", "w", encoding="utf-8") as file:
-    file.write("Experiment 8: final corrected linear max-Q Q-learning under drift\n")
     file.write(
-        "Reward: post-measure fidelity minus pre-measure fidelity; no terminal bonus.\n"
+        "Experiment 8: final corrected linear max-Q Q-learning under drift\n"
+    )
+    file.write(
+        "Scientific/training setup preserved from the corrected pre-freeze "
+        "implementation.\n"
+    )
+    file.write(
+        "Reward: post-measure fidelity minus pre-measure fidelity; "
+        "no terminal bonus.\n"
     )
     file.write(
         "TD next state is constructed after the next drift and decay.\n"
@@ -1087,26 +1244,56 @@ with open(f"{run_dir}/notes.txt", "w", encoding="utf-8") as file:
     file.write(
         "State contains signed and absolute recent-long differences.\n"
     )
-    file.write(f"Shot budgets: [10, 25, 50]\n")
+    file.write(
+        "RL uses a three-shot balanced warm start: ZZ, XX, YY. "
+        "Fixed baselines begin their own schedules immediately.\n"
+    )
+    file.write(f"Shot budgets: {SHOT_BUDGETS}\n")
     file.write(f"Drift levels: {DRIFT_LEVELS}\n")
-    file.write(f"Training episodes: {NUM_TRAIN_EPISODES}\n")
+    file.write(f"Training episodes per restart: {NUM_TRAIN_EPISODES}\n")
     file.write(f"Training restarts: {NUM_RESTARTS}\n")
+    file.write(f"Validation targets: {NUM_VALIDATION_TARGETS}\n")
+    file.write(f"Validation seeds: {NUM_VALIDATION_SEEDS}\n")
+    file.write(
+        f"Independent final-test trajectories per condition: "
+        f"{NUM_TEST_TARGETS}\n"
+    )
+    file.write(f"Measurement realizations per trajectory: {NUM_TEST_SEEDS}\n")
+    file.write(f"Bootstrap resamples: {NUM_BOOTSTRAP}\n")
+    file.write(
+        "Confidence intervals: 95% percentile bootstrap intervals "
+        "for the mean across independent trajectory trials.\n"
+    )
+    file.write(
+        "Paired RL-minus-XYZ intervals use matched trajectories for both "
+        "tracking fidelity and final-state fidelity.\n"
+    )
+    file.write(
+        "Bootstrap uncertainty is conditional on the validation-selected "
+        "trained policy and does not include between-training-run "
+        "selection variability.\n"
+    )
     file.write("Learning rule: linear one-step max-Q TD learning\n")
     file.write(f"Learning rate: {LEARNING_RATE}\n")
     file.write(f"Gamma: {GAMMA}\n")
     file.write(f"Epsilon schedule: {EPSILON_START} to {EPSILON_END}\n")
     file.write(f"TD-error clip: {MAX_TD_ERROR}\n")
+    file.write(f"Long-memory decay: {LONG_DECAY}\n")
+    file.write(f"Recent-memory decay: {RECENT_DECAY}\n")
+    file.write(f"Bootstrap seed: {BOOTSTRAP_SEED}\n")
 
 
-print("Corrected Experiment 8 completed.")
+print("Final frozen Experiment 8 completed.")
 print("Results saved to:", run_dir)
 print("Key files:")
 print("- training_restart_validation.csv")
 print("- drift_metrics.csv")
-print("- drift_summary.csv")
+print("- drift_summary_bootstrap.csv")
 print("- rl_allocation_summary.csv")
-print("- rl_vs_xyz_paired_summary.csv")
-print(f"- tracking_fidelity_vs_drift_N{HEADLINE_BUDGET}.png")
-print(f"- final_fidelity_vs_drift_N{HEADLINE_BUDGET}.png")
-print(f"- rl_vs_xyz_tracking_delta_N{HEADLINE_BUDGET}.png")
+print("- rl_vs_xyz_paired_trials.csv")
+print("- rl_vs_xyz_paired_bootstrap.csv")
+print(f"- tracking_fidelity_vs_drift_N{HEADLINE_BUDGET}_bootstrap95.png")
+print(f"- final_fidelity_vs_drift_N{HEADLINE_BUDGET}_bootstrap95.png")
+print(f"- rl_vs_xyz_tracking_delta_N{HEADLINE_BUDGET}_bootstrap95.png")
+print(f"- rl_vs_xyz_final_delta_N{HEADLINE_BUDGET}_bootstrap95.png")
 print(f"- rl_vs_xyz_tracking_win_rate_N{HEADLINE_BUDGET}.png")
