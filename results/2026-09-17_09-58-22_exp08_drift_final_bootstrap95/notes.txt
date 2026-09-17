@@ -1,0 +1,26 @@
+Experiment 8: final corrected linear max-Q Q-learning under drift
+Scientific/training setup preserved from the corrected pre-freeze implementation.
+Reward: post-measure fidelity minus pre-measure fidelity; no terminal bonus.
+TD next state is constructed after the next drift and decay.
+State contains signed and absolute recent-long differences.
+RL uses a three-shot balanced warm start: ZZ, XX, YY. Fixed baselines begin their own schedules immediately.
+Shot budgets: [10, 25, 50]
+Drift levels: [0.0, 0.0025, 0.005, 0.01]
+Training episodes per restart: 4000
+Training restarts: 5
+Validation targets: 20
+Validation seeds: 2
+Independent final-test trajectories per condition: 2000
+Measurement realizations per trajectory: 1
+Bootstrap resamples: 10000
+Confidence intervals: 95% percentile bootstrap intervals for the mean across independent trajectory trials.
+Paired RL-minus-XYZ intervals use matched trajectories for both tracking fidelity and final-state fidelity.
+Bootstrap uncertainty is conditional on the validation-selected trained policy and does not include between-training-run selection variability.
+Learning rule: linear one-step max-Q TD learning
+Learning rate: 0.002
+Gamma: 0.98
+Epsilon schedule: 0.4 to 0.01
+TD-error clip: 1.0
+Long-memory decay: 0.985
+Recent-memory decay: 0.9
+Bootstrap seed: 20260320
